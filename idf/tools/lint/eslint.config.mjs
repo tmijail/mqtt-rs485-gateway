@@ -1,4 +1,5 @@
-// Issue #229: ESLint for the inline <script> of the web UI pages (idf/components/gw_web/www).
+// Issue #229: ESLint for the inline <script> of the web UI pages (idf/components/gw_web/www),
+// and (#219) for the install tool of the documentation site (docs/flash/, without vendor/).
 // Only the rules that find errors: the rules of eslint:recommended with the type "problem"
 // (no-undef, no-unused-vars, no-dupe-keys, ...), plus no-redeclare and no-global-assign.
 // No style rules. The pages are embedded in the firmware, so the lint runs in CI only, and a
@@ -18,7 +19,19 @@ const problems = Object.fromEntries(
     Object.entries(js.configs.recommended.rules)
         .filter(([name]) => builtinRules.get(name).meta.type === "problem"));
 
+const rules = {
+    ...problems,
+    "no-redeclare": "error",
+    "no-global-assign": "error",
+    "no-unused-vars": ["error", { caughtErrors: "none" }],
+    "no-irregular-whitespace": ["error", { skipTemplates: true }],
+    "no-useless-assignment": "off",
+};
+
 export default [
+    {
+        ignores: ["docs/flash/vendor/**"],
+    },
     {
         files: ["idf/components/gw_web/www/*.html"],
         plugins: { html },
@@ -28,13 +41,21 @@ export default [
             globals: { ...globals.browser },
         },
         linterOptions: { reportUnusedDisableDirectives: "error" },
-        rules: {
-            ...problems,
-            "no-redeclare": "error",
-            "no-global-assign": "error",
-            "no-unused-vars": ["error", { caughtErrors: "none" }],
-            "no-irregular-whitespace": ["error", { skipTemplates: true }],
-            "no-useless-assignment": "off",
-        },
+        rules,
+    },
+    {
+        // the modules of the tool (boot.js loads app.js with import())
+        files: ["docs/flash/*.js"],
+        ignores: ["docs/flash/boot.js"],
+        languageOptions: { ecmaVersion: 2022, sourceType: "module", globals: { ...globals.browser } },
+        linterOptions: { reportUnusedDisableDirectives: "error" },
+        rules,
+    },
+    {
+        // a classic script of each page of the site (extra_javascript of zensical.toml)
+        files: ["docs/flash/boot.js"],
+        languageOptions: { ecmaVersion: 2022, sourceType: "script", globals: { ...globals.browser } },
+        linterOptions: { reportUnusedDisableDirectives: "error" },
+        rules,
     },
 ];

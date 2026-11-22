@@ -101,6 +101,7 @@ flowchart LR
 - An HTTPS web UI for the configuration and the live state. A REST API and a serial shell are also available.
 - A commissioning access point and a claim window: set the first web password on site with a phone. A captive portal opens a guide page to the secure web UI on the phone.
 - Firmware updates by HTTPS or by upload in the web UI, with a trial period and an automatic rollback.
+- An install tool on the documentation site: it flashes a release from the browser over USB (Chrome or Edge), and shows the access data of the gateway.
 - Safe mode, recovery mode, factory reset, a live log in the browser and core dumps.
 
 ## Hardware
@@ -134,7 +135,7 @@ The isolated CAN port of the board is out of scope. For the pins and the data th
 3. Find the address of the gateway and the commissioning password on the console.
 4. Open `https://<address>/` in a browser, and configure the broker and the Modbus devices.
 
-The tutorial [Your first gateway](docs/tutorials/first-gateway-on-the-bench.md) gives all the steps, from a new board to data on the broker.
+The tutorial [Your first gateway](docs/tutorials/first-gateway-on-the-bench.md) gives all the steps, from a new board to data on the broker. When the site has a release, you can also flash it from the browser, with no installation: refer to [Flash the firmware from the browser](docs/how-to/flash-the-firmware-from-the-browser.md).
 
 ## Documentation
 
@@ -148,6 +149,7 @@ The documentation is on the [documentation site](https://mijail.ar/mqtt-rs485-ga
 | Connect to a broker with TLS | [Connect to a broker with TLS](docs/how-to/connect-to-a-broker-with-tls.md) |
 | Send the data to UMH Core | [Connect the gateway to UMH Core](docs/how-to/connect-to-umh-core.md) |
 | Know the Sparkplug topics and metrics | [Sparkplug messages and metrics](docs/reference/sparkplug-messages-and-metrics.md) |
+| Install or repair the firmware from the browser | [Flash the firmware from the browser](docs/how-to/flash-the-firmware-from-the-browser.md) |
 | Update the firmware | [Update the firmware](docs/how-to/update-the-firmware.md) |
 | Repair a gateway | [Recover a gateway](docs/how-to/recover-the-gateway.md) |
 | Know what works and what does not | [Requirements status](docs/reference/requirements-status.md), [Known limitations](docs/reference/known-limitations.md) |

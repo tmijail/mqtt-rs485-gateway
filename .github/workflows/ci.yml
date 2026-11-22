@@ -57,6 +57,8 @@ jobs:
         run: /tmp/venv/bin/python idf/tools/e2e/test_harness.py
       - name: Release script self-test (each check refuses a bad build, issue #279)
         run: python3 idf/tools/release/test_make_manifest.py
+      - name: Site copy script self-test (each check refuses a damaged release, issue #219)
+        run: python3 idf/tools/release/test_site_releases.py
       # Issue #229: the linters, with pinned versions and only rules that find errors. ruff is in
       # tools/e2e/requirements.txt, shellcheck, actionlint and zizmor in tools/lint/requirements.txt,
       # ESLint in tools/lint/package-lock.json.
@@ -71,12 +73,14 @@ jobs:
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: 22
-      - name: ESLint on the scripts of the web UI (issue #229)
+      - name: ESLint on the scripts of the web UI (issue #229) and of the install tool (issue #219)
         run: |
           npm ci --prefix idf/tools/lint --no-audit --no-fund
-          idf/tools/lint/node_modules/.bin/eslint --config idf/tools/lint/eslint.config.mjs idf/components/gw_web/www/
+          idf/tools/lint/node_modules/.bin/eslint --config idf/tools/lint/eslint.config.mjs idf/components/gw_web/www/ docs/flash/
       - name: Unit test of the IPv4 normalization of the web UI (issue #226)
         run: node --test idf/test/web/test_ip4norm.mjs
+      - name: Unit test of the install tool of the documentation site (issue #219)
+        run: node --test idf/test/web/test_flash_tool.mjs
 
   # Issue #225: the same host tests and Sparkplug payloads with AddressSanitizer and
   # UndefinedBehaviorSanitizer (GW_SANITIZE=ON: -fsanitize=address,undefined

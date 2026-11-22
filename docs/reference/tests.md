@@ -20,8 +20,10 @@ This document gives the test suites of the firmware, what each suite examines, t
 | Code scanning (#232) | The flow of data from a source to a `memcpy`, an array index or a length, with CodeQL `security-extended` on the host build | `.github/workflows/codeql.yml` | Each alert in the Security tab is corrected or closed with a reason |
 | Documentation site | The links and the anchors of `docs/`, with a build of the site (Zensical `--strict`) | `.github/workflows/docs.yml`, job `docs` | No warning |
 | Web UI unit test (#226) | The IPv4 normalization of the Configuration tab, in Node.js without a browser | `idf/test/web/test_ip4norm.mjs`, CI job `host-tests` | All tests pass |
+| Install tool unit test (#219) | The logic of the install tool of the documentation site: the access data, the reader of the board and its times, the releases, the manifest and MD5 | `idf/test/web/test_flash_tool.mjs`, CI job `host-tests` | All tests pass |
 | Harness self-test | The retry, hang and progress logic of the E2E harness, with fake clocks | `idf/tools/e2e/test_harness.py` | All tests pass |
 | Release script self-test (#279) | The manifest of a good build and each refusal of `make_manifest.py`, with a small fake build | `idf/tools/release/test_make_manifest.py`, CI job `host-tests` | All tests pass |
+| Site copy self-test (#219) | The copy of the releases to the documentation site and each refusal of `site_releases.py`, with small fake releases | `idf/tools/release/test_site_releases.py`, CI job `host-tests` | All tests pass |
 | Release manifest (#279) | The build for the board against `idf/partitions.csv` and its `sdkconfig`: the offsets, the sizes and the options of the build | `idf/tools/release/make_manifest.py`, CI job `firmware` | The script gives no error |
 | E2E in QEMU (QA-3) | The real firmware against mosquitto, a pymodbus RTU slave, SNTP, syslog and HTTPS clients | `idf/tools/e2e/run_e2e.sh` | Each check passes in the full run of the three variants |
 | Optional E2E scenarios | UMH Core (`umh`), the Sparkplug TCK (`tck`) and the downgrade (`downgrade`) | `run_e2e.sh --only <name>` | Each check passes |
@@ -243,7 +245,7 @@ The `host-tests` job runs the linters (#229). Each linter uses only rules that f
 | shellcheck | Each `*.sh` file of the repository | — |
 | actionlint | `.github/workflows`, with shellcheck on each `run:` script | — |
 | zizmor | The security of the workflows, with `--offline` | Each action is pinned to a full commit hash. `actions/checkout` has `persist-credentials: false` |
-| ESLint | The inline `<script>` of `index.html` and `claim.html` | `idf/tools/lint/eslint.config.mjs`: `eslint:recommended` with the type "problem", `no-redeclare`, `no-global-assign`. Needs Node.js 20.19 or later |
+| ESLint | The inline `<script>` of `index.html` and `claim.html`, and the modules of the install tool in `docs/flash/` (not `docs/flash/vendor/`) | `idf/tools/lint/eslint.config.mjs`: `eslint:recommended` with the type "problem", `no-redeclare`, `no-global-assign`. Needs Node.js 20.19 or later |
 
 - The versions are pinned. ruff is in `idf/tools/e2e/requirements.txt`. shellcheck, actionlint and zizmor are in `idf/tools/lint/requirements.txt`, as Python wheels with the binary. ESLint is in `idf/tools/lint/package-lock.json`.
 - Each `zip()` has a `strict=` argument (B905). Use `strict=False` only for an intended truncation.
@@ -326,13 +328,24 @@ The pages of the web UI go into the firmware image as they are, with their inlin
 
 The test reads `index.html`, takes the source of each function and runs it in a separate V8 context (`node:vm`). The test also makes sure that the page calls `ip4Blur` on `focusout`. Refer to [`network`](configuration.md#network) for the rule.
 
+## Install tool unit test
+
+The install tool of the documentation site is in `docs/flash/` (#219). Refer to [Flash the firmware from the browser](../how-to/flash-the-firmware-from-the-browser.md). `idf/test/web/test_flash_tool.mjs` imports its modules without the DOM, and tests them with `node --test`:
+
+- `access.js`: the parser of the answer of the command `access`, with the texts of `gw_access_format()`. The test adds the prompt, CR LF, colors and log lines around the answer. It also examines the refusal of an unknown version and of a broken answer.
+- `reader.js`: the reader of the board, with a fake clock. "No answer" after 5 s without the start log of this firmware, and at once in the download mode. A wait of up to 30 s with the start log. A late answer, a read again after a restart, and the asks in each state.
+- `releases.js`: the list of the releases (only the tags `v0.<minor>.<patch>`, the newest first by number), the checks of the manifest, the value of the fetch option `integrity`, and the notes about the version.
+- `md5.js`: the MD5 that esptool-js uses to examine a written part, against `node:crypto`.
+
+The test does not use Web Serial, esptool-js or a board. For a check of the page in a browser, refer to [Build the documentation site](../how-to/build-the-documentation-site.md#examine-the-install-tool).
+
 ## CI
 
 `.github/workflows/ci.yml` runs on each push and pull request. The jobs `firmware`, `analyzer`, `e2e-build`, `e2e` and `e2e-poison` run in the `espressif/idf:v6.1` image, pinned by digest. The other jobs run directly on `ubuntu-24.04`.
 
 | Job | What it does |
 |---|---|
-| `host-tests` | Builds the host tests with `-O2` and runs them. Decodes the `spb_dump` payloads (`spb_decode.py --check`). Runs `test_spb_decode.py`, `test_harness.py`, `test_make_manifest.py`, the linters and the unit test of the web UI |
+| `host-tests` | Builds the host tests with `-O2` and runs them. Decodes the `spb_dump` payloads (`spb_decode.py --check`). Runs `test_spb_decode.py`, `test_harness.py`, `test_make_manifest.py`, `test_site_releases.py`, the linters, the unit test of the web UI and the unit test of the install tool |
 | `host-tests-sanitizers` | Builds the host tests with `-DGW_SANITIZE=ON` and runs them. Decodes the payloads of the sanitized `spb_dump` |
 | `fuzz` | Installs `clang-18` and `libclang-rt-18-dev`, builds `idf/test/fuzz` and runs each target for 60 s, 4 at a time (`run_fuzz.sh`). The start is the corpus of the weekly job (from `actions/cache`, read only) and the seeds. A finding stops the job, and the artifact `fuzz-findings` has the input and the logs. The job runs at the same time as the other jobs |
 | `clang-tidy` | Installs `clang-18` and `clang-tidy-18`. Makes sure that each `NOLINT` comment names its check and gives a reason. Configures the host build with clang and runs `run-clang-tidy-18` on `gw_core` and the host tests. A result stops the job |

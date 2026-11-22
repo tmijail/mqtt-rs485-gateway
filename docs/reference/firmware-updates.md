@@ -14,6 +14,23 @@ This document gives the facts about the firmware updates of the gateway (FW-1): 
 - The decision logic is pure C with host tests, in `gw_core`: `gw_ota`, `gw_bootloop`, `gw_fwlast`, `gw_cfgschema`, `gw_lkgnet` and `gw_cfgprev`. The component `gw_fw` applies it, with `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`.
 - The default build does not require a signature, and it burns no eFuse. The owner of the board can always flash it over USB. Refer to [The features that burn eFuses](../explanation/no-efuse-features.md).
 
+## The ways to change the firmware
+
+An update is one of the ways to put a new firmware on the gateway. A flash over USB is the other way. Each way has a different effect on the configuration and the secrets:
+
+| Action | Firmware | Configuration | Secrets and certificate | Protection | State after it |
+|---|---|---|---|---|---|
+| Update: the card **Firmware** of the web UI, a download or an NCMD | New | Stays | Stay | Pre-flight check, trial, rollback | Normal mode, or the earlier image |
+| Install: the install tool of the site (erase all) | New | Erased | Erased | None | Commissioning mode |
+| Repair: the install tool of the site (no erase) | New | Stays | Stay | None | The state before it, if the image can read the stored data |
+| Reset the web password: the install tool or the shell (`web-password remove`) | Stays | Stays | Only the web password goes away | — | The same mode, with the commissioning password |
+| Factory reset | Stays | Erased | Erased | — | Commissioning mode |
+
+- For Install and Repair, refer to [Flash the firmware from the browser](../how-to/flash-the-firmware-from-the-browser.md). They write the parts of a release: refer to [What a flash of a release writes and keeps](release-manifest.md#what-a-flash-of-a-release-writes-and-keeps).
+- `idf.py flash` writes the four parts and the LittleFS image of `idf/fs/`. Refer to [Build the firmware](../how-to/build-the-firmware.md).
+- A flash over USB does no pre-flight check. An earlier image can be unable to read the stored configuration, the NVS or the LittleFS partition.
+- The install tool has no update with a trial over USB yet. That function is #281.
+
 ## How an update starts
 
 | Start | Condition |

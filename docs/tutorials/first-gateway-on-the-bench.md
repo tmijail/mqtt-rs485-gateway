@@ -30,6 +30,8 @@ The tutorial takes approximately one hour. For each step, it tells you what you 
 
 4. Make sure that the console shows the boot of the gateway.
 
+> **Note:** When the site has a release, you can also flash it from the browser, with no ESP-IDF: refer to [Flash the firmware from the browser](../how-to/flash-the-firmware-from-the-browser.md). Its **Install** writes no configuration. The gateway then starts in commissioning mode, not with the example configuration, and the card **Gateway** shows the mode `commissioning` in step 3. The panel of the tool gives the address, the commissioning password and the fingerprint of step 2.
+
 The gateway now runs the embedded example configuration: DHCP, the broker `192.168.1.10`, the group `Plant1`, the edge node `GW01` and one device `Meter1`. You change it in step 4.
 
 Keep the monitor open for the next steps. To exit the monitor, push `Ctrl+]`.

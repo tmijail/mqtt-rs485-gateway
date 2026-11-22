@@ -104,7 +104,7 @@ Correct a real error in the code. When the code can be clearer for the analyzer,
    ```
 
 2. Run the self-test of the harness: `python3 idf/tools/e2e/test_harness.py`.
-3. Run the self-test of the release script (#279): `python3 idf/tools/release/test_make_manifest.py`.
+3. Run the self-tests of the release scripts (#279, #219): `python3 idf/tools/release/test_make_manifest.py` and `python3 idf/tools/release/test_site_releases.py`.
 4. Run the linters. Each linter must give 0 results:
 
    ```bash
@@ -112,13 +112,13 @@ Correct a real error in the code. When the code can be clearer for the analyzer,
    git ls-files -z '*.sh' | xargs -0 ~/e2e/bin/shellcheck
    ~/e2e/bin/actionlint -shellcheck ~/e2e/bin/shellcheck
    ~/e2e/bin/zizmor --offline .github/workflows
-   npm ci --prefix idf/tools/lint && idf/tools/lint/node_modules/.bin/eslint --config idf/tools/lint/eslint.config.mjs idf/components/gw_web/www/
+   npm ci --prefix idf/tools/lint && idf/tools/lint/node_modules/.bin/eslint --config idf/tools/lint/eslint.config.mjs idf/components/gw_web/www/ docs/flash/
    ```
 
-5. Run the unit test of the web UI (#226). All tests must pass:
+5. Run the unit tests of the web UI (#226) and of the install tool of the documentation site (#219). All tests must pass:
 
    ```bash
-   node --test idf/test/web/test_ip4norm.mjs
+   node --test idf/test/web/test_ip4norm.mjs idf/test/web/test_flash_tool.mjs
    ```
 
 ESLint needs Node.js 20.19 or later. For a false positive, add `# noqa: <rule>` or `# shellcheck disable=SCnnnn` with the reason. Do not add an ESLint comment to a web page, because the comment goes into the firmware image. Change an option in `eslint.config.mjs` instead.

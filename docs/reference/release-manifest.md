@@ -1,6 +1,6 @@
 # The release files and the manifest
 
-This document gives the facts about a release of the firmware. It gives the tag and the version, the files, the format of `manifest.json`, the checks of the script and the release workflow. For the procedure, refer to [Make a release](../how-to/make-a-release.md).
+This document gives the facts about a release of the firmware. It gives the tag and the version, the files, the format of `manifest.json`, the checks of the script, the release workflow and the copy on the documentation site. For the procedure, refer to [Make a release](../how-to/make-a-release.md).
 
 > **Warning: The firmware has never run on the board (#1, #18).** A release has the images of the build for the board. Nobody flashed these images on a board.
 
@@ -183,8 +183,108 @@ The script has these options:
 
 The job `firmware` of `ci.yml` also runs `make_manifest.py`, on the normal build of each push. Thus a build that does not agree with `idf/partitions.csv` fails the CI before a release. The artifact `firmware-esp32s3` has the six files of that build in `build/release/`. Their version has the commit hash.
 
+## The copy on the documentation site
+
+A browser cannot download a GitHub Release asset from another site, because GitHub sends no CORS header for the assets. Thus the documentation site has a copy of the files of each release (#219). The install tool in the browser reads the files from this copy, on the same site.
+
+The copy is in the folder `firmware/` of the site, at `https://mijail.ar/mqtt-rs485-gateway/firmware/`:
+
+```text
+firmware/
+├── index.json
+├── v0.2.0/
+│   ├── bootloader.bin
+│   ├── partition-table.bin
+│   ├── ota_data_initial.bin
+│   ├── rs485_spb_gateway.bin
+│   ├── manifest.json
+│   └── SHA256SUMS
+└── v0.1.0/
+    └── (the same six files)
+```
+
+Each folder of a release has the six files of [The files of a release](#the-files-of-a-release), with no change. The copy has no other file of the GitHub release.
+
+### The format of `index.json`
+
+`index.json` is the list of the releases on the site. This example has two releases:
+
+```json
+{
+  "format": 1,
+  "releases": [
+    { "tag": "v0.2.0", "version": "0.2.0", "published": "2026-11-30T12:00:00Z",
+      "prerelease": true, "manifest": "v0.2.0/manifest.json" },
+    { "tag": "v0.1.0", "version": "0.1.0", "published": "2026-11-23T09:00:00Z",
+      "prerelease": true, "manifest": "v0.1.0/manifest.json" }
+  ]
+}
+```
+
+| Key | Type | Value |
+|---|---|---|
+| `format` | Number | The format number of `index.json`: `1` |
+| `releases` | Array | The releases on the site, the newest first. An empty array when the repository has no release |
+| `releases[].tag` | String | The tag of the release, for example `v0.2.0` |
+| `releases[].version` | String | The version of the firmware: the tag without the `v` |
+| `releases[].published` | String | The date and the time of the publication on GitHub, in UTC (ISO 8601). It is `publishedAt` of `gh release list` |
+| `releases[].prerelease` | Boolean | `true` for a GitHub pre-release |
+| `releases[].manifest` | String | The path of `manifest.json` of the release, relative to `index.json` |
+
+- The sequence of `releases` is by the version, the newest first. The script compares the minor number, then the patch number, as numbers. Thus `v0.10.0` is before `v0.9.0`.
+- The list has only the releases with a tag `v0.<minor>.<patch>`. It has no draft.
+- With no release, the file is `{"format": 1, "releases": []}`. The install tool then tells the user that the site has no release yet.
+- A tool refuses an `index.json` with a `format` number that it does not know. It ignores a key that it does not know.
+- The files of a part are in the folder of its manifest. Thus the path of a part is the folder of `manifest` and the `file` of the part.
+
+### The checks before the copy
+
+The script [`idf/tools/release/site_releases.py`](https://github.com/tmijail/mqtt-rs485-gateway/blob/main/idf/tools/release/site_releases.py) makes the copy. It reads the list of the releases (the JSON of `gh release list`) and one folder for each release. It examines each release before the copy.
+
+When a check fails, the script gives one error line for each problem and the exit status 1. It then writes no file. The failure stops the build of the site, and thus the publication. A damaged copy never goes on the site.
+
+| Check | The script refuses |
+|---|---|
+| The release list | A list that is not a JSON array. A tag that is in the list two times. A release without `publishedAt` or `isPrerelease` |
+| The files | A release without one of the six files. A file that is a link |
+| `SHA256SUMS` | A line that is not in the format of `sha256sum`. A line for a file that is not one of the five files. A file with no line or with two lines. A file whose SHA-256 is not the SHA-256 of its line |
+| The manifest | A `format` that is not `1`. A `name` that is not `rs485_spb_gateway`. A `chip` that is not `ESP32-S3`. A `version` that is not the tag without the `v` |
+| The parts | A part that is not `bootloader`, `partition-table`, `otadata` or `app`, or that is not in the manifest one time. A `file` that is not the name of one of the four images: a path, `..` or another file. An `offset` that is not a number. A `size` or a `sha256` that does not agree with the file |
+
+The script has these options:
+
+| Option | Function |
+|---|---|
+| `--list <file>` | The JSON of `gh release list --json tagName,isDraft,isPrerelease,publishedAt`. Always necessary |
+| `--tags` | The script prints the tags of the releases that it keeps, one on each line, and stops |
+| `--releases <dir>` | The folder with one folder `<tag>` for each kept release, as `gh release download "<tag>" --dir <dir>/<tag>` writes it |
+| `--out <dir>` | The output folder, for example `site/firmware`. It must be empty, or hold only the files of an earlier run. The script deletes these files first |
+
+[`idf/tools/release/test_site_releases.py`](https://github.com/tmijail/mqtt-rs485-gateway/blob/main/idf/tools/release/test_site_releases.py) is the self-test of the script. It makes fake releases with `make_manifest.py`, and it examines the copy, `index.json` and each refusal. The CI job `host-tests` runs it.
+
+### When the site gets a new release
+
+The workflow [`.github/workflows/docs.yml`](https://github.com/tmijail/mqtt-rs485-gateway/blob/main/.github/workflows/docs.yml) builds the site. After the Zensical build, a step downloads the releases with `gh release download` and runs the script. The output goes into `site/firmware/`. The step needs only the permission `contents: read`.
+
+| Event | The copy | Publication |
+|---|---|---|
+| Push to `main` | Yes | Yes |
+| Push to another branch, pull request, run on request | Yes. The script examines the real releases | No |
+| End of a run of the workflow `Release` (`workflow_run`) | Yes, only for a run for a tag that ended with success | Yes, from `main` |
+
+- The workflow `Release` makes the release with `GITHUB_TOKEN`. Such a release starts no other workflow. Thus `docs.yml` starts at the end of each run of `Release`.
+- A run on `workflow_run` builds the site from `main`, not from the tag. The release files are only data that the script examines.
+- The runs for `main` do not overlap. A new run waits for the end of the run in progress, and no publication stops in the middle.
+- Only `docs.yml` publishes the site. Each publication replaces the full site, so two workflows that publish would delete the files of the other workflow.
+
+### Limits of the copy
+
+- The step gets at most 100 releases from `gh release list`. With more releases, the oldest releases are not on the site.
+- GitHub Pages has limits for the size of a site and for the traffic of a month. Refer to [GitHub Pages limits](https://docs.github.com/en/pages/getting-started-with-github-pages/github-pages-limits). Each release adds its images to the site. The script has no option yet to keep only the newest releases.
+- A damaged release on GitHub stops each build of the site, also the build of a pull request. The builds stop until a maintainer corrects the files of the release.
+- The checks find a damaged file or a file of another release. They do not prove the origin of a file, because the images have no signature.
+
 ## Limits
 
-- The install tool in the browser is not made yet (#219). It will read `manifest.json` and flash the parts with esptool-js.
-- The release workflow does not copy the images to the documentation site yet (#219).
+- The install tool in the browser reads `index.json` and `manifest.json`, and flashes the parts with esptool-js. Refer to [Flash the firmware from the browser](../how-to/flash-the-firmware-from-the-browser.md). Nobody flashed a board with it (#18).
 - The images have no signature. The project has no Secure Boot (#133).

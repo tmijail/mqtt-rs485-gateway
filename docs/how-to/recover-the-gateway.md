@@ -55,6 +55,10 @@ After a factory reset, the gateway is in commissioning mode. It has no configura
 
 ## Nobody knows the web password
 
+### With the install tool
+
+The install tool of this site removes the web password through the USB cable. The other settings stay. Refer to [Reset the web password](flash-the-firmware-from-the-browser.md#reset-the-web-password).
+
 ### With the USB console
 
 The other settings stay.
@@ -129,6 +133,10 @@ You can also set `"enabled": true` in `web` with the USB console. The steps are 
 ## The web UI is not available in any mode
 
 Flash the firmware over USB. The owner of the board always keeps this access: the project burns no eFuses.
+
+The install tool of this site does the flash from the browser: use its **Repair**. Refer to [Repair a gateway](flash-the-firmware-from-the-browser.md#repair-a-gateway). A repair writes only the firmware. The configuration and the passwords stay.
+
+To flash with ESP-IDF instead:
 
 1. Connect a computer to the USB-C connector.
 2. In `idf/`, type `idf.py -p <port> flash`.

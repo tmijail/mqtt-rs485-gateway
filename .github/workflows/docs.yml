@@ -3,23 +3,51 @@
 #
 # --strict stops the build on a warning: a link to a page or an anchor that does not exist.
 # Each action is pinned to a full commit hash, with its tag in the comment (issue #229).
+#
+# Issue #219: the site also has a copy of the images of each release, in site/firmware/, for the
+# install tool in the browser. A browser cannot download a GitHub Release asset from another
+# origin (no CORS headers). Each build downloads the releases v0.<minor>.<patch> with gh, and
+# idf/tools/release/site_releases.py examines them (SHA256SUMS, manifest.json) before the copy.
+# A damaged release stops the build, and thus the deploy. See docs/reference/release-manifest.md.
+#
+# The workflow Release makes a release with GITHUB_TOKEN, and such a release starts no other
+# workflow. Thus this workflow also starts when a run of Release for a tag (event push) ends with
+# success (workflow_run), and publishes the site again with the new release. A run on
+# workflow_run checks out the default branch, not the code of the tag, and the release files are
+# only data that the script examines. Release does not deploy Pages itself: each deploy replaces
+# the full site, so one workflow only deploys it.
 name: Docs
 
 on:
   push:
   pull_request:
   workflow_dispatch:
+  # zizmor: ignore[dangerous-triggers] the run checks out main only, has only contents: read for
+  # the build, and the script examines the release files as data before the copy
+  workflow_run:
+    workflows: [Release]
+    types: [completed]
 
 permissions:
   contents: read
 
+# One group for each ref. A run on workflow_run has the ref of the default branch, so it is in
+# the group of the pushes to main. In that group, a new run waits for the run in progress and
+# does not cancel it: two deploys never overlap, and no deploy stops in the middle. A newer run
+# that waits replaces an older run that waits, and the newer run has all the releases too. In the
+# other groups (branches, pull requests), a new run cancels the run in progress.
 concurrency:
   group: docs-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   docs:
     name: Build the documentation site
+    # on workflow_run: only after a release (a run of Release for a tag that ended with success)
+    if: >-
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push')
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -30,20 +58,48 @@ jobs:
           python3 -m venv /tmp/venv
           /tmp/venv/bin/pip install -q -r idf/tools/docs/requirements-site.txt
           /tmp/venv/bin/zensical build --clean --strict
+      # On each build, also on a pull request: the script then examines the real releases. With
+      # no release, index.json has an empty list. gh release list gives at most --limit releases.
+      - name: Copy the release images into site/firmware (issue #219)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          releases="$RUNNER_TEMP/releases"
+          mkdir -p "$releases"
+          gh release list --repo "$REPO" --limit 100 \
+              --json tagName,isDraft,isPrerelease,publishedAt > "$RUNNER_TEMP/releases.json"
+          python3 idf/tools/release/site_releases.py --list "$RUNNER_TEMP/releases.json" \
+              --tags > "$RUNNER_TEMP/tags.txt"
+          while read -r tag; do
+            gh release download "$tag" --repo "$REPO" --dir "$releases/$tag" \
+                -p bootloader.bin -p partition-table.bin -p ota_data_initial.bin \
+                -p rs485_spb_gateway.bin -p manifest.json -p SHA256SUMS
+          done < "$RUNNER_TEMP/tags.txt"
+          python3 idf/tools/release/site_releases.py --list "$RUNNER_TEMP/releases.json" \
+              --releases "$releases" --out site/firmware | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Keep the site for GitHub Pages
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: >-
+          (github.event_name == 'push' || github.event_name == 'workflow_run') &&
+          github.ref == 'refs/heads/main'
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: site
 
   docs-deploy:
     name: Publish the documentation site
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: >-
+      (github.event_name == 'push' || github.event_name == 'workflow_run') &&
+      github.ref == 'refs/heads/main'
     needs: docs
     runs-on: ubuntu-24.04
     permissions:
       pages: write
       id-token: write
+    # one deploy of Pages at a time, whatever the ref of the run
+    concurrency:
+      group: pages
+      cancel-in-progress: false
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

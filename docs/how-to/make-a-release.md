@@ -1,6 +1,6 @@
 # Make a release
 
-This procedure tells the maintainer how to make a release of the firmware. A release is a GitHub pre-release with the images of the build for the board, `manifest.json` and `SHA256SUMS`. A tag starts the release workflow, and the workflow makes the release.
+This procedure tells the maintainer how to make a release of the firmware. A release is a GitHub pre-release with the images of the build for the board, `manifest.json` and `SHA256SUMS`. A tag starts the release workflow, and the workflow makes the release. Then the workflow of the documentation site publishes a copy of the images on the site.
 
 For the files, the format of the manifest and the checks, refer to [The release files and the manifest](../reference/release-manifest.md).
 
@@ -8,7 +8,7 @@ For the files, the format of the manifest and the checks, refer to [The release 
 
 > **Warning: Do not use a release as verified firmware for the board.** The firmware has never run on the board (#1, #18).
 
-The install tool in the browser and the copy of the images to the documentation site are not made yet (#219). Until then, the release page of GitHub is the only place of the images.
+The install tool in the browser reads the images from the copy on the documentation site (#219). Refer to [Flash the firmware from the browser](flash-the-firmware-from-the-browser.md).
 
 ## Before you start
 
@@ -78,12 +78,32 @@ The push starts the workflow **Release**.
 5. Optional: download the six files into one folder, and run `sha256sum -c SHA256SUMS` there.
 6. Optional: change the text of the release on GitHub. The workflow writes a short text and the list of the changes.
 
+## 5. Examine the copy on the documentation site
+
+At the end of the workflow **Release**, the workflow **Docs** starts. It copies the images of each release to the documentation site, and publishes the site.
+
+1. On GitHub, open **Actions**, then the workflow **Docs**.
+2. Find the run with the event `workflow_run`, after the run of **Release**.
+3. Wait for the end of the jobs **Build the documentation site** and **Publish the documentation site**.
+4. Open <https://mijail.ar/mqtt-rs485-gateway/firmware/index.json> in a browser.
+5. Make sure that the first entry of `releases` has the tag of the new release.
+6. Optional: open the summary of the job **Build the documentation site**. Its table shows each release on the site.
+
+You can also read `index.json` from a terminal:
+
+```bash
+curl -s https://mijail.ar/mqtt-rs485-gateway/firmware/index.json
+```
+
+For the copy, `index.json` and the checks, refer to [The copy on the documentation site](../reference/release-manifest.md#the-copy-on-the-documentation-site).
+
 ## What the workflow does
 
 1. It makes sure that the tag is `v` and `GW_VERSION`.
 2. It builds the firmware for the board with `GW_RELEASE=ON`, in the ESP-IDF image of the CI. The version of this build is `GW_VERSION`, without the git hash.
 3. It runs `idf/tools/release/make_manifest.py`. The script examines the build, and writes the four images, `manifest.json` and `SHA256SUMS`.
 4. It makes a GitHub pre-release of the tag with the six files.
+5. At the end of the run, the workflow **Docs** starts. It examines the files of each release with `idf/tools/release/site_releases.py`. Then it publishes the documentation site with a copy of the images.
 
 The manifest has no part for the configuration and the secrets. Refer to [What a flash of a release writes and keeps](../reference/release-manifest.md#what-a-flash-of-a-release-writes-and-keeps).
 
@@ -101,6 +121,9 @@ Find the error line in the log of the job. Then find its cause in this table:
 | `sdkconfig has CONFIG_...=y` | The build is not the build for the board: an option of a QEMU build or an option that burns an eFuse is on | Remove the option from `sdkconfig.defaults` |
 | An error about a part, an offset or the partition table | The build does not agree with `idf/partitions.csv` | Refer to [The checks of the script](../reference/release-manifest.md#the-checks-of-the-script) |
 | The job **Publish the pre-release** fails: the release exists | The tag has a release already | The workflow never replaces a release. Make a release with a new version |
+| The workflow **Docs** fails with `site_releases: error: v0.2.0: ...` | A file of the release on GitHub is damaged, or it does not agree with `manifest.json` or `SHA256SUMS` | Download the artifact `firmware-release` of the run of **Release**. Upload the correct file with `gh release upload v0.2.0 <file> --clobber`. Then run the failed jobs of **Docs** again |
+| The workflow **Docs** fails for another cause, for example a network error | The download from GitHub failed | Open the run of **Docs**, and click **Re-run failed jobs** |
+| `index.json` does not list the new release | The run of **Docs** did not end, or the run of **Release** failed | Make sure that the run of **Release** ended with success. Then wait for the end of the run of **Docs** |
 
 To delete a tag that has no release:
 

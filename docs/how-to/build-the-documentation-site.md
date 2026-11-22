@@ -42,6 +42,81 @@ You need Python 3.11 or later.
 
 The build writes the site into `site/` and a cache into `.cache/`. Git ignores the two folders.
 
+A local build has no folder `site/firmware/`, the copy of the release images. Only the workflow `docs.yml` makes it. To make it on your computer, refer to [Add the release images to a local build](#add-the-release-images-to-a-local-build).
+
+## Add the release images to a local build
+
+Do this procedure when you work on a page that reads `firmware/index.json`, for example the install tool. For the folder and the format of `index.json`, refer to [The copy on the documentation site](../reference/release-manifest.md#the-copy-on-the-documentation-site).
+
+You need the GitHub CLI `gh`, with a login (`gh auth status`).
+
+1. Do the build of the site:
+
+    ```bash
+    ~/docs-venv/bin/zensical build --clean --strict
+    ```
+
+2. Get the list of the releases:
+
+    ```bash
+    gh release list --repo tmijail/mqtt-rs485-gateway --limit 100 \
+        --json tagName,isDraft,isPrerelease,publishedAt > /tmp/releases.json
+    ```
+
+3. Download each release that the script keeps:
+
+    ```bash
+    for tag in $(python3 idf/tools/release/site_releases.py --list /tmp/releases.json --tags); do
+      gh release download "$tag" --repo tmijail/mqtt-rs485-gateway --dir "/tmp/releases/$tag"
+    done
+    ```
+
+4. Examine the releases and copy them into the site:
+
+    ```bash
+    python3 idf/tools/release/site_releases.py --list /tmp/releases.json \
+        --releases /tmp/releases --out site/firmware
+    ```
+
+5. Make sure that the script shows the table of the releases, and no error line.
+6. Serve the folder `site/`:
+
+    ```bash
+    python3 -m http.server 8001 --directory site
+    ```
+
+7. Open <http://localhost:8001/firmware/index.json> in a browser.
+
+`zensical build --clean` deletes `site/`, also `site/firmware/`. After each build, do step 4 again.
+
+With no release, the script writes an `index.json` with an empty list. To examine a page with a release before the first release, use a release build of your computer:
+
+1. Do a release build, and run `make_manifest.py` on it. Refer to [Do the checks on your computer](make-a-release.md#do-the-checks-on-your-computer). Use `--out /tmp/releases/v0.1.0`, with the version of `GW_VERSION`.
+2. Write a list with this release into `/tmp/releases.json`:
+
+    ```json
+    [{"tagName": "v0.1.0", "isDraft": false, "isPrerelease": true, "publishedAt": "2026-11-30T12:00:00Z"}]
+    ```
+
+3. Do steps 4 to 7 of the procedure above.
+
+## Examine the install tool
+
+The install tool is the page [Flash the firmware from the browser](flash-the-firmware-from-the-browser.md). Its modules are in `docs/flash/`. `zensical.toml` loads `docs/flash/boot.js` on each page, and that script loads the tool only on the page with the element `#gw-flash`. The unit test `idf/test/web/test_flash_tool.mjs` examines the logic without a browser. Refer to [Install tool unit test](../reference/tests.md#install-tool-unit-test).
+
+Do this procedure after a change in `docs/flash/`:
+
+1. Do the steps of [Add the release images to a local build](#add-the-release-images-to-a-local-build).
+2. Open <http://localhost:8001/how-to/flash-the-firmware-from-the-browser/> in Chrome or Edge. Web Serial operates on `localhost` without HTTPS.
+3. Make sure that the browser console shows no error.
+4. Make sure that the tab **Files** of the tool lists the releases of `index.json`.
+5. With a board: click **Connect the board**, and make sure that the panel shows the state of the board.
+6. Open the page in Firefox. Make sure that the tool shows "This browser cannot use a serial port" and the image files.
+
+Do not flash a board for a test of the page. The firmware has never run on the board (#1, #18).
+
+A change of the version of esptool-js puts the file `bundle.js` of the npm package into a new folder `docs/flash/vendor/esptool-js-<version>/`. `SOURCE.txt` in that folder tells how to examine the copy.
+
 ## Add a document
 
 1. Put the document in the folder of its Diátaxis type: `tutorials/`, `how-to/`, `reference/` or `explanation/`.
@@ -62,6 +137,6 @@ The anchors of the site are the same as the anchors of GitHub (`toc.slugify` in 
 
 ## Publish the site
 
-The workflow `.github/workflows/docs.yml` builds the site on each push and on each pull request. On a push to `main`, the job `docs-deploy` publishes it to GitHub Pages.
+The workflow `.github/workflows/docs.yml` builds the site on each push and on each pull request. After the Zensical build, it copies the release images into `site/firmware/`. On a push to `main`, the job `docs-deploy` publishes the site to GitHub Pages. At the end of each release, the workflow builds the site from `main` again and publishes it with the new release. Refer to [When the site gets a new release](../reference/release-manifest.md#when-the-site-gets-a-new-release).
 
 For the first publication, an owner of the repository sets **Settings → Pages → Build and deployment → Source** to **GitHub Actions**.
