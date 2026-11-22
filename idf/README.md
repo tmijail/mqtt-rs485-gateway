@@ -10,7 +10,7 @@ This folder has the firmware of the gateway, for the target `esp32s3`. The [proj
 | `components/` | The components. `gw_core` has all the testable logic, in pure C without ESP-IDF. The other components are adapters to ESP-IDF |
 | `test/host/` | The host tests (CMake, Unity, CTest) |
 | `tools/e2e/` | The E2E harness: the real firmware in QEMU, against mosquitto and a pymodbus slave |
-| `tools/` | The other tools: the screenshots of the docs, the Sparkplug decode check, the stack report and the linters |
+| `tools/` | The other tools: the screenshots of the docs, the Sparkplug decode check, the stack report, the release files (`tools/release/`) and the linters |
 | `cmake/` | The checks of the `sdkconfig` and the compiler options of the own components |
 | `fs/` | The files of the LittleFS partition, with the example configuration |
 

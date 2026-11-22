@@ -73,6 +73,7 @@ nav = [
   { "Developers" = [
     { "How-to guides" = [
       "how-to/build-the-firmware.md",
+      "how-to/make-a-release.md",
       "how-to/run-the-tests.md",
       "how-to/run-e2e-in-docker.md",
       "how-to/run-the-sparkplug-tck.md",
@@ -82,6 +83,7 @@ nav = [
     { "Reference" = [
       "reference/architecture.md",
       "reference/build-configuration.md",
+      "reference/release-manifest.md",
       "reference/tests.md",
       "reference/e2e-harness.md",
       "reference/e2e-scenarios.md",

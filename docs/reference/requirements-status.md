@@ -136,7 +136,7 @@ The column MVP has ✅ for the IDs of the MVP (SPEC §5).
 | FW-1 | | done | H + Q: download, upload, refusals, the trial, the confirmation, the rollback. C: the rollback for low memory | [Firmware updates](firmware-updates.md) |
 | FW-2 | | out of scope | Secure Boot burns eFuses (#133). Only the secure QEMU build requires signed OTA images (`sdkconfig.qemu-secure`, decision of #133, for #255) | [Features that burn eFuses](../explanation/no-efuse-features.md) |
 | FW-3 | | out of scope | Flash encryption burns eFuses (#133) | [Features that burn eFuses](../explanation/no-efuse-features.md) |
-| FW-4 | ✅ | done | Q: `0.1.0+g<hash>[.dirty]` in `Node Info/Firmware` | [Node metrics](sparkplug-messages-and-metrics.md#node-metrics) |
+| FW-4 | ✅ | done | Q: `0.1.0+g<hash>[.dirty]` in `Node Info/Firmware`. A release build gives the version without the hash (#279) | [Node metrics](sparkplug-messages-and-metrics.md#node-metrics) |
 
 ## Reliability (REL)
 
