@@ -207,8 +207,11 @@ jobs:
           . "$IDF_PATH/export.sh"
           ccache -z
           cd idf
-          idf.py set-target esp32s3 build 2>&1 | tee build.log
-          if grep -E "warning:" build.log; then
+          # The log goes outside idf/: idf/CMakeLists.txt adds ".dirty" to the version when
+          # "git status" in idf/ shows a file, also an untracked file, and tee creates its file
+          # before the configuration (issue #18). size.txt and stack.txt come after it.
+          idf.py set-target esp32s3 build 2>&1 | tee /tmp/build.log
+          if grep -E "warning:" /tmp/build.log; then
             echo "::error::the firmware build produced warnings"
             exit 1
           fi
@@ -278,15 +281,16 @@ jobs:
           ccache -z
           cd idf
           rc=0
-          idf.py -B build-analyzer -D GW_ANALYZER=ON set-target esp32s3 build 2>&1 | tee analyzer.log || rc=$?
+          # the logs go outside idf/, as in the job firmware: a file in idf/ makes the version ".dirty"
+          idf.py -B build-analyzer -D GW_ANALYZER=ON set-target esp32s3 build 2>&1 | tee /tmp/analyzer.log || rc=$?
           ccache -s
           # the results in the own code, without the colour codes of -fdiagnostics-color=always
-          sed 's/\x1b\[[0-9;]*[mK]//g' analyzer.log > analyzer-plain.log
-          if grep -E "/idf/(components/gw_[a-z0-9_]+|main)/.*\[-W(error=)?analyzer-" analyzer-plain.log; then
+          sed 's/\x1b\[[0-9;]*[mK]//g' /tmp/analyzer.log > /tmp/analyzer-plain.log
+          if grep -E "/idf/(components/gw_[a-z0-9_]+|main)/.*\[-W(error=)?analyzer-" /tmp/analyzer-plain.log; then
             echo "::error::the GCC static analyzer found a result in the own code"
             exit 1
           fi
-          if grep -E "warning:" analyzer-plain.log; then
+          if grep -E "warning:" /tmp/analyzer-plain.log; then
             echo "::error::the analyzer build produced warnings"
             exit 1
           fi
