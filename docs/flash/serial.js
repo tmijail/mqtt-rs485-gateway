@@ -1,6 +1,8 @@
-// Issue #219: the serial port of the board, with Web Serial. The console of the gateway is UART0
-// at 115200 baud (CONFIG_ESP_CONSOLE_UART_BAUDRATE). The page does not change DTR and RTS: on a
-// board with the usual automatic reset, a change can restart the gateway.
+// Issue #219: the serial port of the board, with Web Serial. The console of the gateway is the
+// USB-Serial-JTAG of the ESP32-S3 on the USB-C connector (303A:1001, #18), where the baud rate has
+// no effect; 115200 is for a USB-UART bridge on UART0 (TX0/RX0 of the pin header). The page does
+// not change DTR and RTS: on the USB-Serial-JTAG, as with the usual automatic reset, a change can
+// restart the gateway.
 
 export const BAUD = 115200;
 

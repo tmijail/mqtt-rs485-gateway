@@ -1960,9 +1960,11 @@ static void setup_spill(void)
         return;
     }
 #if CONFIG_GW_SF_SPILL_SDMMC
-    ESP_LOGW(TAG, "store & forward: microSD enabled. GPIO45 (its D0) is the VDD_SPI strapping "
-                  "pin: a card that holds it high at reset can select 1.8 V for the flash and "
-                  "stop the board from booting (docs/reference/store-and-forward.md)");
+    /* #131 SD1: the pull-up on D0 is on the board, so the card does not change the strapping;
+     * a module without the VDD_SPI eFuses would not get here (1.8 V for its 3.3 V flash) */
+    ESP_LOGI(TAG, "store & forward: microSD enabled. GPIO45 (its D0) is the VDD_SPI strapping "
+                  "pin with a pull-up on the board; the VDD_SPI eFuses of the module set the "
+                  "flash voltage (docs/reference/store-and-forward.md)");
 #endif
     static gw_sfspill_io_t io;
     char where[96], why[80];

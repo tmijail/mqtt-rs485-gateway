@@ -24,7 +24,7 @@ The components are in [`idf/components/`](https://github.com/tmijail/mqtt-rs485-
 | `gw_fw` | The firmware updates (FW-1): the HTTPS download (`esp_https_ota`) or the upload through the web UI, the pre-flight check, the verification, the self-check of the new image, the rollback (`CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`), the boot-loop counter, safe mode and the other-slot button (#144). Refer to [Firmware updates](firmware-updates.md) | Yes |
 | `gw_log` | The remote syslog (REL-4). A hook on `esp_log_set_vprintf` copies each line to a bounded ring, and a task sends the lines over UDP. The same hook keeps the last lines for the live log of the web UI, from the boot (#200). It sets the log level of a tag at run time (#199) | Yes |
 | `gw_mbtcp` | The Modbus TCP gateway (MB-15). A TCP server sends each MBAP request to the bus task and returns the response of the RTU slave. The local unit (`modbus_tcp.local_unit_id`, #216) reads `gw_tagdb`, and its DO writes go to the `local_io` task. Only with `modbus_tcp.enabled` | Yes |
-| `gw_shell` | The `esp_console` shell on UART0: `status`, `devices`, `config [show\|load\|check]`, `restart [safe]`, `factory-reset`, `rebirth`, `mbread`, `card`, `ping`, `ap`, `coredump [dump\|erase]`, `identify`, `log`. The commands that change something need `CONFIG_GW_SHELL_WRITE_COMMANDS` (default `y`). The QEMU build also has the emulator commands `di`, `pcnt`, `expander`, `validation`, `resetcut`, `storm`, `pubfail`, `boot`, `claimsim`, `apsim` and `panic`. The responses are atomic relative to the log | Yes |
+| `gw_shell` | The `esp_console` shell on the USB-Serial-JTAG of the chip (the USB-C connector; UART0 in the QEMU build): `status`, `devices`, `config [show\|load\|check]`, `restart [safe]`, `factory-reset`, `rebirth`, `mbread`, `card`, `ping`, `ap`, `coredump [dump\|erase]`, `identify`, `log`. The commands that change something need `CONFIG_GW_SHELL_WRITE_COMMANDS` (default `y`). The QEMU build also has the emulator commands `di`, `pcnt`, `expander`, `validation`, `resetcut`, `storm`, `pubfail`, `boot`, `claimsim`, `apsim` and `panic`. The responses are atomic relative to the log | Yes |
 | `main` | `app_main`: loads the configuration and connects the components. The modes are normal, recovery (configuration rejected), commissioning (after a factory reset) and fault (no PSRAM) | Yes |
 
 ### The modules of `gw_core`
@@ -101,7 +101,7 @@ A change of `littlefs` or of ESP-IDF can change a stored format. Such a change m
 ## Tasks, queues and ownership
 
 ```
-                 esp_timer (1 kHz)                 UART0 console (logs + shell)
+                 esp_timer (1 kHz)                 USB console (logs + shell)
                  gw_io: debounce DI ──┐
                                       │ flag + wake
   ┌──────────────┐  write queue       ▼            ┌──────────────────────────┐

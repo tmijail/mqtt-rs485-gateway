@@ -8,7 +8,7 @@ The harness is one file, `idf/tools/e2e/e2e.py`. `idf/tools/e2e/scenarios.py` ho
 
 - QEMU `esp_develop_9.2.2`, machine `esp32s3`, from `idf_tools.py` (it needs `libslirp0`). The firmware has the `sdkconfig.qemu` overlay (`CONFIG_GW_IO_SIMULATED`).
 - Ethernet is `open_eth` on slirp.
-- UART0 goes to a socket, for the log and the shell. The harness sets the DIs with the shell command `di`, and the BOOT button with `boot 1` and `boot 0`.
+- UART0 goes to a socket, for the log and the shell. The board has its console on the USB-Serial-JTAG of the chip (USB-C): refer to [What QEMU does not cover](#what-qemu-does-not-cover). The harness sets the DIs with the shell command `di`, and the BOOT button with `boot 1` and `boot 0`.
 - UART1 goes to a socket and to the pymodbus RTU slave.
 - The flash uses DIO, not QIO (refer to [Limits of QEMU](#limits-of-qemu)).
 - QEMU runs without `-icount`. Thus 1 s of uptime is 1 s of wall time.
@@ -221,6 +221,7 @@ Each item has a test on the board in a hardware issue (the last column). The boa
 | Item | What the QEMU build does | What only the board or the host tests examine | Issue with the test on the board |
 |---|---|---|---|
 | W5500 | `open_eth` | The W5500 driver | #18, #130 |
+| Console | UART0 (`CONFIG_ESP_CONSOLE_UART_DEFAULT` in `sdkconfig.qemu`). QEMU has no USB host | The USB-Serial-JTAG console of the board on the USB-C connector: the log, the shell and `config load` | #18 |
 | TCA9554, GPIO, RMT | `CONFIG_GW_IO_SIMULATED`: the DOs are in RAM, the DIs come from the `di` command, the LED is only in the log. The expander registers are in RTC memory, so they keep their values after a software restart or a panic | A real I²C failure (host tests only) | #1, #18, #126. The DOs after a panic or a watchdog reset: #129 |
 | TCA9554 absent | `expander absent <ms>` makes the model silent for the first ms of the next boot. The time starts at its first access, because `esp_timer` does not return to 0 at a software restart (#240) | — | #126 |
 | RS485 mode of the UART | The normal UART mode. `uart_wait_tx_done` causes an assert on `TX_DONE` in QEMU | The RS485 hardware mode | #18, #127 |

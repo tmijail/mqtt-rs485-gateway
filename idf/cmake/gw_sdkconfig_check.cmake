@@ -50,6 +50,9 @@ set(GW_SDKCONFIG_REQUIRED
     BOOTLOADER_CUSTOM_RESERVE_RTC
     BOOTLOADER_FACTORY_RESET
     BOOTLOADER_SKIP_VALIDATE_IN_DEEP_SLEEP
+    # #18: the console (log and shell) on the USB-C connector of the board, the USB-Serial-JTAG
+    # of the chip; a stale sdkconfig with the UART0 console has no shell on the USB (QEMU: UART0)
+    ESP_CONSOLE_USB_SERIAL_JTAG
     # #233: the QEMU build confirms a new image after 30 s (sdkconfig.qemu); a stale sdkconfig
     # with the 60 s of the board makes each OTA scenario of the E2E 30 s longer per update
     GW_FW_SELFCHECK_S)

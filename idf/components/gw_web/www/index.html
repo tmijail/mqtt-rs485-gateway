@@ -1010,7 +1010,7 @@ function webOff(b){const w=JSON.parse(b).web||{};if(w.enabled!==false||(base191&
    parse_store_forward). Decision of the product owner: the UI writes true or false when the spill
    keys have their defaults, and an object in the other cases. readSf() changes the key only when a
    control differs from the document, so the form alone gives no change. */
-const SFKB=131072,SFWARN='Make sure that the card slot has no pull-up on D0 (GPIO45). A pull-up can stop the boot of the board. <a href="https://mijail.ar/mqtt-rs485-gateway/reference/store-and-forward/#the-microsd-card-and-gpio45" target="_blank" rel="noopener">Read more</a>';
+const SFKB=131072,SFWARN='The board has a pull-up on D0 (GPIO45), a strapping pin. The spill does not change its level at reset: an eFuse of the module sets the voltage of the flash. <a href="https://mijail.ar/mqtt-rs485-gateway/reference/store-and-forward/#the-microsd-card-and-gpio45" target="_blank" rel="noopener">Read more</a>';
 function sfEff(){const v=get(cfg,"sparkplug.store_forward");
  if(!v||typeof v!=="object"||Array.isArray(v))return {en:v===true,sd:false,kb:SFKB};
  const sd=v.sd&&typeof v.sd==="object"?v.sd:{};return {en:v.enabled===undefined?true:!!v.enabled,sd:!!sd.enabled,kb:sd.max_kb===undefined?SFKB:sd.max_kb}}

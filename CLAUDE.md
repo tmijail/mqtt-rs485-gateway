@@ -214,7 +214,7 @@ Platform calls go through `gw_port.h`, which has two implementations: `port/gw_p
 - `gw_storage`: LittleFS config, the secrets in NVS and factory reset. The NVS encryption and its migration are only in the secure QEMU build (#133, #261). The bdSeq is in RAM only (#161).
 - `gw_web`: the HTTPS UI and REST API, with Basic auth, a CSRF check (`X-Requested-With` plus Origin/Host) and the `web_guard` stall watchdog.
 - `gw_fw`: OTA (HTTPS download or web upload), the trial period and rollback.
-- `gw_shell`: the `esp_console` shell (`status`, `devices`, `config`, …), which the E2E harness drives over UART0.
+- `gw_shell`: the `esp_console` shell (`status`, `devices`, `config`, …). On the board it is on the USB-Serial-JTAG of the chip, the USB-C connector (the board has no USB-UART bridge, #18). The QEMU build has it on UART0, which the E2E harness drives.
 - `gw_log`: remote syslog.
 - `gw_ap`: the commissioning SoftAP.
 - `main`: wires everything together. Its modes are normal, recovery (config rejected: nothing started, recovery network and web only) and commissioning.
@@ -273,7 +273,8 @@ Rules that tests and fixes must respect:
 
 ## Security constraints
 
-- Never burn eFuses on a real device, and never run `espefuse` against one. QEMU's emulated eFuse file is fine.
+- Never burn an eFuse on a real device. Do not run a command that writes eFuses (`espefuse burn-*`, `write-protect-efuse`, `read-protect-efuse` and the like) against one. QEMU's emulated eFuse file is fine.
+- Commands that only read are permitted on a real device, also for an agent: `espefuse summary` and `dump`, and the read commands of `esptool` (`chip-id`, `flash-id`, `read-flash`).
 - No build in `main` may burn an eFuse on the board (#133). This rule stays until the work on the optional owner profile (#255) starts. A Kconfig option that burns eFuses (`CONFIG_SECURE_BOOT`, `CONFIG_SECURE_FLASH_ENC_ENABLED`, `CONFIG_SECURE_DISABLE_ROM_DL_MODE`, `CONFIG_SECURE_ENABLE_SECURE_ROM_DL_MODE`, `CONFIG_BOOTLOADER_APP_ANTI_ROLLBACK`, `CONFIG_BOOT_ROM_LOG_ALWAYS_OFF`/`_ON_GPIO_*`, `CONFIG_NVS_ENCRYPTION` with the HMAC scheme) can appear only in a QEMU overlay. The host test `check_efuse_options` examines `sdkconfig.defaults` and each overlay that is not for QEMU. When you change this list, change the list in `idf/test/host/check_efuse_options.cmake` and `REFUSED_OPTIONS` in `idf/tools/release/make_manifest.py` too (#279: a release never has such a build).
 - Signing keys for tests are generated into build or scratch dirs (e.g. `build-qemu/e2e_signing_key.pem`) and are never committed.
 
