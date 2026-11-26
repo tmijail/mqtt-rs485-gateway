@@ -28,7 +28,8 @@ The QEMU build is different from the board build (`sdkconfig.qemu`). For the boa
 The page [Flash the firmware from the browser](../how-to/flash-the-firmware-from-the-browser.md) has these limits:
 
 - Nobody flashed a board with it. The unit tests examine its logic without a browser and without a board. The first flash of a board is part of #18.
-- The USB-C connector goes to the USB-Serial-JTAG peripheral of the ESP32-S3 (VID:PID 303A:1001). The board has no USB-UART bridge (#18). These facts are not known yet: the automatic reset into the download mode, and the restart of the gateway when the page opens the port.
+- The USB-C connector goes to the USB-Serial-JTAG peripheral of the ESP32-S3 (VID:PID 303A:1001). The board has no USB-UART bridge (#18).
+- On the first board, `esptool` started the download mode through the USB, without the BOOT button. Its reset did not remove the port from the computer. The RESET button removes the port for a short time. The page itself did not flash a board yet.
 - The times of the reader (5 s without the start log, 30 s with it) come from the prototype and from QEMU. Measure them on the board.
 - The flash uses 460800 baud after the stub of esptool-js starts. A USB chip that cannot use this rate stops the flash. Then use esptool with a lower rate.
 - Only Chrome and Edge on a computer have Web Serial. The other browsers get the image files and the esptool command.

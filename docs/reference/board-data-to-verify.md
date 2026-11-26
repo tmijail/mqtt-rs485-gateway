@@ -16,7 +16,8 @@ This document lists the data of the Waveshare ESP32-S3-POE-ETH-8DI-8DO board tha
 
 | Data | Finding | Evidence | Confidence |
 |---|---|---|---|
-| Module | **ESP32-S3-WROOM-1U-N16R8**: 16 MB of flash, 8 MB of octal PSRAM, an external antenna on an SMA connector | The marking of the module. The eFuses: `PSRAM_CAP` 8M, `PSRAM_VENDOR` AP_3v3. Chip revision v0.2 | High (first board) |
+| Module | **ESP32-S3-WROOM-1U-N16R8**: 16 MB of flash, 8 MB of octal PSRAM, an external antenna on an SMA connector | The marking of the module. The eFuses: `PSRAM_CAP` 8M, `PSRAM_VENDOR` AP_3v3. Chip revision v0.2, crystal 40 MHz | High (first board) |
+| Flash chip | JEDEC ID: manufacturer `0x46`, device `0x4018` (16 MB, 4 data lines) | `esptool flash-id` on the first board | High. The QIO table of the ESP-IDF bootloader does not have the manufacturer `0x46`: the bootloader uses its default method to set QIO. The QIO boot of this firmware is not tested (#18) |
 | DO expander | **TCA9554 at 0x20** | The marking `PW554` (TI, TCA9554PWR). The A version (PW554A) has the address 0x38. Demo: `TCA9554_ADDRESS 0x20` (`WS_TCA9554PWR.h`) | High. The first I²C access confirms the address pins |
 | DO polarity | **Low level on the expander pin = DO active** | **First board:** the demo sets all the pins of the expander high at boot, and the 8 DO LEDs stay off. A DI connected to DGND turns on its DO: the DI→DO mode of the demo (`DIN_Inverse_Enable = 0`) copies the raw level. **Earlier evidence:** ESPHome declares `inverted: true` on the 8 DOs | **High, not measured.** The setting is `CONFIG_GW_DO_ACTIVE_LOW` (default `y`). **Measure each output with this firmware before you connect loads (#1)** |
 | DO output stage | Two quad optocouplers EL3H7, then a ULN2803A (Darlington, sink). The terminals are DO1–DO8, DGND and DOCOM | The markings of the parts and the labels of the terminals | High (first board). Refer to [Outputs and inputs](#outputs-and-inputs) |
@@ -29,7 +30,7 @@ This document lists the data of the Waveshare ESP32-S3-POE-ETH-8DI-8DO board tha
 | RS485 | UART1, TX 17, RX 18, RTS 21, mode `UART_MODE_RS485_HALF_DUPLEX`. Transceiver SP3485E, isolated. Terminals A+, B− and a ground (⏚). A jumper `NC`/`120R` connects 120 Ω across A and B | **First board:** the markings, the labels, and the resistance across A and B (approximately 120 Ω with `120R`, approximately 48 kΩ with `NC`). Demo `WS_RS485.cpp`: `setPins(-1,-1,-1,21)` | High |
 | CAN | TJA1051T/3, isolated. Terminals CAN_H, CAN_L and a ground (⏚), with its own jumper `NC`/`120R` | The marking and the labels. The firmware does not use CAN | High (first board) |
 | W5500 | SPI 13/14/15, CS 16, INT 12, RST 39 | The wiki and `WS_ETH.h`. The marking on the first board | High |
-| Console | **USB-C → USB-Serial-JTAG of the ESP32-S3** (VID:PID 303A:1001). The board has no USB-UART bridge. UART0 (GPIO 43/44) is on TX0 and RX0 of the pin header | **First board:** Windows shows "USB JTAG/serial debug unit" and a "USB Serial Device", with no extra driver. The firmware uses `CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG` | High. The shell of this firmware on the USB is not tested yet (#18) |
+| Console | **USB-C → USB-Serial-JTAG of the ESP32-S3** (VID:PID 303A:1001). The board has no USB-UART bridge. UART0 (GPIO 43/44) is on TX0 and RX0 of the pin header | **First board:** Windows shows "USB JTAG/serial debug unit" and a "USB Serial Device", with no extra driver. `esptool` starts the download mode through the USB, without the BOOT button. The firmware uses `CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG` | High. The shell of this firmware on the USB is not tested yet (#18) |
 
 ## The inspection of the first board
 
