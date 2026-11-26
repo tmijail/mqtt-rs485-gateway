@@ -76,7 +76,7 @@ The column MVP has ✅ for the IDs of the MVP (SPEC §5).
 | SPB-11 | ✅ | done | H + Q: a simulated DO with the polarity of the board. C: the TCA9554 | [NCMD](sparkplug-messages-and-metrics.md#ncmd) |
 | SPB-12 | ✅ | done | H + Q | [`devices[].tags`](configuration.md#devicestags) |
 | SPB-13 | | done | H + Q: STATE `false` and `true`, an old STATE (#157), an offline STATE with backup brokers (#156) | [Sparkplug behavior](sparkplug-behavior.md#the-primary-host-application-spb-13) |
-| SPB-14 | | done | H + Q: the RAM buffer, the replay, the spill to a LittleFS directory. C: SDMMC, FAT and the format. GPIO45 risk: off by default | [Store & forward](store-and-forward.md) |
+| SPB-14 | | done | H + Q: the RAM buffer, the replay, the spill to a LittleFS directory. C: SDMMC, FAT and the format. GPIO45: a pull-up on the board, and an eFuse sets the voltage of the flash on the first board (#131). Off by default | [Store & forward](store-and-forward.md) |
 | SPB-15 | | done | H + Q. The value is not kept after a restart | [Sparkplug behavior](sparkplug-behavior.md#node-controlscan-rate-spb-15) |
 | SPB-16 | | done | H + P + Q. A host test (`test_worst_case_birth_fits`) encodes the worst DBIRTH in the payload buffer of 32 KiB (`GW_SPB_PAYLOAD_MAX`) | [Sparkplug behavior](sparkplug-behavior.md#quality-and-properties-spb-16) |
 | SPB-17 | | done | H + P + Q. C: the RSSI (QEMU has no radio). A host test (`test_worst_case_nbirth_fits`) encodes the worst NBIRTH in the payload buffer. That NBIRTH has `Node Info/Modbus TCP` (#81), 64 template tags, and 8 parameters in each of 16 definitions (#276) | [Diagnostics](sparkplug-messages-and-metrics.md#diagnostics) |

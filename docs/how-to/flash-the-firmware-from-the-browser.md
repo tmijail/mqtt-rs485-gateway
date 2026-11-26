@@ -18,7 +18,7 @@ You need:
 
 - Chrome or Edge on a computer. A phone, a tablet and the other browsers have no serial port for a web page (Web Serial). The page then gives the image files only.
 - The USB-C cable of the board. The cable must have data lines.
-- On some computers, the driver of the USB chip of the board.
+- No driver. The USB-C connector goes to the USB of the ESP32-S3, and Windows 10 or later, macOS and Linux have its driver.
 - For an install or a repair: a release on this site. The tool selects the last release. You can select an earlier release.
 
 The tool uses the port of the board only while this page is open. Close a serial monitor or another program that uses the port.
@@ -120,7 +120,7 @@ For the other ways, refer to [The web interface is off](recover-the-gateway.md#t
 ## The list has no serial port
 
 1. Use a USB cable with data lines. A cable for power only does not work.
-2. Install the driver of the USB chip of the board.
+2. On Windows, open the Device Manager. Make sure that **Ports (COM & LPT)** shows a **USB Serial Device** when the cable is connected.
 3. Connect the cable again. Click **Connect the board** again.
 
 On Linux, your user must have the permission for the serial port, for example the group `dialout`.

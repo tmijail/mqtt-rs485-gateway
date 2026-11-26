@@ -48,6 +48,10 @@ CONFIG_GW_FW_PARK_OTHER_CORE=y
 # Not less than 30 s: the E2E does actions during a trial (the other-slot button, NCMD Boot
 # Other Slot, a configuration save, a panic) that need a window with PSRAM and single-threaded TCG
 CONFIG_GW_FW_SELFCHECK_S=30
+# [hardware] The board has its console on the USB-Serial-JTAG peripheral (USB-C). QEMU has no USB
+# host: the console is on UART0, which the E2E harness drives through a socket
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+# CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG is not set
 # [emulator] FW-1: no USB-Serial-JTAG secondary console (QEMU has no USB host anyway). Its connection
 # monitor runs in every tick interrupt and reads the USB peripheral; on the core parked during
 # an image verification that read faulted under QEMU's cache freeze (LoadStorePIFAddrError)

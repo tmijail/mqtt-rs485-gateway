@@ -512,7 +512,7 @@ The object form, with the optional spill to a microSD card:
 | Key | Type | Default | Rule |
 |---|---|---|---|
 | `enabled` | bool | `true` | The same as `store_forward: true` |
-| `sd.enabled` | bool | `false` | When the RAM buffer is three quarters full, its oldest samples go to the microSD card in blocks of 4 KB. When the session starts again, the gateway publishes the samples of the card first. It requires `enabled`. The QEMU build without PSRAM does not start the spill, and the boot log and the shell tell why. **GPIO45 (D0 of the card) is a *strapping* pin: read the warning in [Store & forward](reference/store-and-forward.md#the-microsd-card-and-gpio45) before you enable it** |
+| `sd.enabled` | bool | `false` | When the RAM buffer is three quarters full, its oldest samples go to the microSD card in blocks of 4 KB. When the session starts again, the gateway publishes the samples of the card first. It requires `enabled`. The QEMU build without PSRAM does not start the spill, and the boot log and the shell tell why. GPIO45 (D0 of the card) is a *strapping* pin with a pull-up on the board: refer to [Store & forward](reference/store-and-forward.md#the-microsd-card-and-gpio45) |
 | `sd.max_kb` | integer | `131072` | 64–4 194 304 (128 MB by default). The space that the gateway uses on the card. It uses less when the cluster size limits it (refer to [Store & forward](reference/store-and-forward.md#extents-blocks-and-superblocks)). When the card is full of data, the gateway writes over the oldest blocks and counts their samples as lost |
 
 **The card.**

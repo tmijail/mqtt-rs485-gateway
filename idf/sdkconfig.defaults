@@ -13,6 +13,14 @@ CONFIG_SPIRAM_MODE_OCT=y
 CONFIG_SPIRAM_SPEED_80M=y
 CONFIG_SPIRAM_IGNORE_NOTFOUND=y
 
+# The console (the log and the shell) is on the USB-C connector. The board has no USB-UART bridge:
+# the connector goes to the USB-Serial-JTAG peripheral of the ESP32-S3 (VID:PID 303A:1001, found
+# on the first board, #18). With the UART0 console, the USB showed only the log (the secondary
+# console has no input) and the shell answered only on TX0/RX0 of the pin header. Without a host on
+# the USB, the driver drops the output after one wait of 50 ms and does not block the writer.
+# The QEMU build keeps UART0 (sdkconfig.qemu).
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+
 CONFIG_COMPILER_OPTIMIZATION_SIZE=y
 CONFIG_FREERTOS_HZ=1000
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=6144

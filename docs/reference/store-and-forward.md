@@ -31,7 +31,7 @@ This document gives the data of store & forward: the RAM buffer, the microSD car
 
 With `sd.enabled`, the oldest samples go from the RAM buffer to the card in blocks of 4 KB when the buffer is three quarters full. When the session starts again, the gateway publishes the samples of the card first.
 
-> **Caution: Read [The microSD card and GPIO45](#the-microsd-card-and-gpio45) before you set `sd.enabled`.** GPIO45 (D0 of the card) is a strapping pin. A pull-up on D0 can stop the boot of the board.
+> **Note:** GPIO45 (D0 of the card) is a strapping pin, and the board has a pull-up on it. The spill does not change its level at reset. Refer to [The microSD card and GPIO45](#the-microsd-card-and-gpio45).
 
 ### The card and its format
 
@@ -109,12 +109,13 @@ The time limit of 5 s is `FLUSH_LIMIT_MS` in `gw_edge.c`. The move is at most th
 
 ## The microSD card and GPIO45
 
-> **Warning: Examine the schematic of the board before you set `sd.enabled`.** D0 of the card must have no pull-up. The card must not keep D0 high at reset. If GPIO45 is high at reset, the 3.3 V flash of the module can fail to boot.
-
 - The card uses SDMMC in 1-bit mode: CLK GPIO48, CMD GPIO47, D0 GPIO45.
-- GPIO45 is the strapping pin of VDD_SPI. If it is high at reset, the ROM supplies 1.8 V to the flash.
-- Nobody verified the circuit of D0 on the schematic or on a board.
-- For this reason, the spill is off by default. When you enable it, the boot log gives a warning.
+- GPIO45 is the strapping pin of VDD_SPI. If it is high at reset and no eFuse sets VDD_SPI, the ROM supplies 1.8 V to the flash.
+- The board has a pull-up of approximately 10 kΩ from D0 to 3V3 (#131, item SD1). Thus GPIO45 is high at each reset, also without a card.
+- On the first board, the eFuses `VDD_SPI_FORCE` and `VDD_SPI_TIEH` were burned at the factory of the module. The flash gets 3.3 V, and the ROM ignores GPIO45. The project burns no eFuse (#133).
+- The pull-up is on the board, so the spill and the card do not change the level of GPIO45 at reset. A module without these eFuses would fail to boot also with the spill off.
+- To read the eFuses of a board, run `espefuse --port <port> summary`. This command only reads. The last line must be "Flash voltage (VDD_SPI) set to 3.3V by efuse".
+- The spill is off by default. When you enable it, the boot log gives a note about GPIO45.
 
 ## Retention
 
