@@ -65,7 +65,7 @@ Two isolated converters B0505LS-1W supply the isolated parts. The continuity bet
 
 ## Where the firmware keeps the data
 
-- All the data is in [`gw_bsp.c`](https://github.com/tmijail/mqtt-rs485-gateway/blob/main/idf/components/gw_bsp/gw_bsp.c). The RTC address is `GW_PCF85063_ADDR` in [`gw_rtc.h`](https://github.com/tmijail/mqtt-rs485-gateway/blob/main/idf/components/gw_core/include/gw_rtc.h).
+- All the data is in [`gw_bsp.c`](https://github.com/tmijail/mqtt-rs485-gateway/blob/main/idf/components/gw_bsp/gw_bsp.c). The RS485 DE pin and its polarity are in [`gw_bsp_pins.h`](https://github.com/tmijail/mqtt-rs485-gateway/blob/main/idf/components/gw_bsp/include/gw_bsp_pins.h), because the bootloader also reads them (#300). The RTC address is `GW_PCF85063_ADDR` in [`gw_rtc.h`](https://github.com/tmijail/mqtt-rs485-gateway/blob/main/idf/components/gw_core/include/gw_rtc.h).
 - You can invert the DI and DO polarities in `menuconfig`, in the menu `Gateway: board`. The other data is fixed.
 - At boot, `gw_dout` sets the latch of the expander to the OFF level of each channel (0xFF with active low) **before** the pins change to outputs. Thus the DOs give no pulse at boot. The firmware inverts the write and the read-back with the polarity mask.
 
