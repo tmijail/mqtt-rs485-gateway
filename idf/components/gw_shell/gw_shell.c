@@ -1,3 +1,5 @@
+#include "driver/gpio.h"
+#include "soc/gpio_reg.h"
 #include "gw_shell.h"
 
 #include <ctype.h>
@@ -1461,6 +1463,18 @@ static int cmd_stacks(int argc, char **argv)
 }
 ATOMIC(cmd_stacks)
 
+/* #287 test: the pad configuration and the output level of the RS485 DE pin (GPIO21) */
+static int cmd_gpio21(int argc, char **argv)
+{
+    (void)argc;
+    (void)argv;
+    out("GPIO21 out_level %d\n", (int)((REG_READ(GPIO_OUT_REG) >> 21) & 1U));
+    out_flush();
+    gpio_dump_io_configuration(stdout, 1ULL << 21);
+    fflush(stdout);
+    return 0;
+}
+
 /* #207: the LED and the buzzer identify the gateway for 10 s (harmless: also without
  * CONFIG_GW_SHELL_WRITE_COMMANDS). */
 static int cmd_identify(int argc, char **argv)
@@ -2079,6 +2093,8 @@ esp_err_t gw_shell_start(const gw_shell_ctx_t *ctx)
         {.command = "crash", .help = "BOARD TEST BUILD ONLY (#129 M10): abort()", .func = cmd_crash},
         {.command = "stacks", .help = "BOARD TEST BUILD ONLY (#129 M4): stack high-water marks of "
          "the IDF and gateway tasks", .func = cmd_stacks_atomic},
+        {.command = "gpio21", .help = "BOARD TEST BUILD ONLY (#287): the pad of the RS485 DE pin",
+         .func = cmd_gpio21},
         {.command = "log", .help = "The log levels and the tags; '<tag|*> <level>' sets the level "
          "of a tag, 'reset' sets every tag to the level of the build (not saved, #199)",
          .hint = "[<tag|*> <none|error|warn|info|debug|verbose> | reset]", .func = cmd_log_atomic},
