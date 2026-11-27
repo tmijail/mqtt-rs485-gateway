@@ -11,6 +11,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -65,6 +66,16 @@ unsigned gw_authlimit_blocked(const gw_authlimit_t *l, uint64_t now_ms);
  * is not a stall.
  */
 bool gw_webstall_stuck(uint32_t now_ms, uint32_t alive_ms, bool busy, uint32_t limit_ms);
+
+/*
+ * Issue #291: the sessions of a held server that the watchdog shuts down. @p handshake[k] is
+ * true for session k while it is in its TLS handshake (it has no TLS context yet).
+ * esp_https_server does the handshake in the accept, in the task of the server: a session in its
+ * handshake is the one that holds the task, and only it goes. Otherwise the watchdog cannot
+ * tell which session holds the task, and all go. Sets @p shut[k] for each session to shut down
+ * and returns their number.
+ */
+size_t gw_webstall_pick(const bool *handshake, size_t n, bool *shut);
 
 #ifdef __cplusplus
 }
