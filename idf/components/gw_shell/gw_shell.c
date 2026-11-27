@@ -47,7 +47,7 @@
 #include "ping/ping_sock.h"
 #include "sdkconfig.h"
 #if CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG
-#include "driver/usb_serial_jtag.h"   /* #293: coredump dump waits for the host */
+#include "driver/usb_serial_jtag.h"   /* #293: coredump dump writes into the driver */
 #endif
 
 static const char *TAG = "shell";
@@ -1238,17 +1238,25 @@ static int cmd_ping(int argc, char **argv)
  * erases it (a write command). The dump is a copy of the RAM at the crash and can hold secrets
  * in clear text. The console needs physical access to the board, and that access also reads
  * all of the flash through USB: the shell asks for no password (the web API does). */
-/* #293: the USB-Serial-JTAG console of ESP-IDF waits at most 50 ms for room in the 256-byte TX
- * buffer of its driver (TX_FLUSH_TIMEOUT_US of usb_serial_jtag_vfs.c), then drops the bytes. A
- * host that does not read for longer (a busy computer) thus lost complete lines of the dump on
- * the board. Each write of the copy thus first waits until the host has read all of the earlier
- * output (the TX buffer and the FIFO are empty), and then writes at most GW_CDUMP_WRITE_LINES
- * lines, which fit into the empty buffer. A host that does not read for CD_HOST_WAIT_MS, or a
- * copy longer than CD_COPY_MAX_MS, stops the copy without the END marker. The UART console of
- * the QEMU build drops nothing (it waits for the FIFO, and the UART has no flow control), so
- * there each write goes out at once. */
+/* #293: on the USB-Serial-JTAG console, stdout of ESP-IDF v6.1 loses output in two ways:
+ * - the VFS write() (usb_serial_jtag_vfs.c) returns EIO, and writes nothing, while
+ *   usb_serial_jtag_is_connected() is false. The connection monitor
+ *   (usb_serial_jtag_connection_monitor.c) sets it false at a tick without a USB start-of-frame
+ *   after it used up 3 ticks of tolerance, and it gives the tolerance back only after a
+ *   disconnection. Ticks without a start-of-frame (tick jitter at 1000 Hz) thus give short false
+ *   disconnections with the cable connected. stdout is line-buffered (picolibc), so each failed
+ *   write() drops complete lines. A failed write() takes no time, so the copy lost runs of
+ *   complete lines, and it still had the END marker (the probable cause of #293);
+ * - a character that waits more than 50 ms for room in the 256-byte TX buffer is dropped
+ *   (TX_FLUSH_TIMEOUT_US), when the computer does not read in time.
+ * The copy thus goes past stdout, straight into the TX buffer of the driver
+ * (usb_serial_jtag_write_bytes: no connection check, nothing dropped), in pieces that fit into
+ * it. A piece waits at most CD_HOST_WAIT_MS for room; then, or after CD_COPY_MAX_MS, the copy
+ * stops without the END marker. The UART console of the QEMU build loses nothing (it waits for
+ * the FIFO), so there the copy uses stdout. */
 #define CD_HOST_WAIT_MS 3000
 #define CD_COPY_MAX_MS  120000   /* the bound of the whole copy */
+#define CD_PIECE        64       /* bytes of one write into the 256-byte TX buffer of the driver */
 
 typedef struct {
     int64_t deadline_us;
@@ -1261,18 +1269,43 @@ static const char *cd_read(void *ctx, uint32_t off, uint8_t *buf, size_t len)
     return e == ESP_OK ? NULL : esp_err_to_name(e);
 }
 
+#if CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG
+/* @p text into the TX buffer of the driver, with "\r\n" for each "\n" (as the VFS of the
+ * console does). False when a piece did not get room in CD_HOST_WAIT_MS. */
+static bool cd_put_usj(const char *text, size_t len)
+{
+    char piece[CD_PIECE + 1];
+    size_t n = 0;
+    for (size_t i = 0; i < len; i++) {
+        if (text[i] == '\n') {
+            piece[n++] = '\r';
+        }
+        piece[n++] = text[i];
+        if (n >= CD_PIECE || i + 1 == len) {
+            if (usb_serial_jtag_write_bytes(piece, n, pdMS_TO_TICKS(CD_HOST_WAIT_MS)) != (int)n) {
+                return false;
+            }
+            n = 0;
+        }
+    }
+    return true;
+}
+#endif
+
 static bool cd_write(void *ctx, const char *text, size_t len)
 {
     const cd_copy_ctx_t *c = ctx;
     out_flush();
     xSemaphoreTakeRecursive(s_console, portMAX_DELAY);
     bool ok = esp_timer_get_time() < c->deadline_us;
-#if CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG
-    ok = ok && usb_serial_jtag_wait_tx_done(pdMS_TO_TICKS(CD_HOST_WAIT_MS)) == ESP_OK;
-#endif
     if (ok) {
+        fflush(stdout);   /* the earlier output of stdout goes first */
+#if CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG
+        ok = cd_put_usj(text, len);
+#else
         fwrite(text, 1, len, stdout);
         fflush(stdout);
+#endif
     }
     xSemaphoreGiveRecursive(s_console);
     return ok;
