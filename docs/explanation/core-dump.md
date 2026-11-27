@@ -2,8 +2,6 @@
 
 This document tells how the gateway keeps the core dump of a crash and gives it without a USB cable, and why the design is so (REL-1, issue #132). For the procedure, refer to [Get and decode a core dump](../how-to/decode-a-core-dump.md).
 
-> **Warning: Do not use this document as verified data for the board.** The core dump ran only in QEMU. Nobody tested it on the board (#18).
-
 ## Where the dump goes
 
 A panic, or the task watchdog, saves an ELF dump in the partition `coredump` (64 KB). ELF is the only format of ESP-IDF v6.1. The dump stays in flash until you erase it, also after more restarts.
