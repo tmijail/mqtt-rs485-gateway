@@ -165,7 +165,7 @@ For the procedure, refer to [Connect to a broker with TLS](../how-to/connect-to-
 - **The RS485 bus during a reset and the start of the firmware (#287).** On the board, an isolator connects GPIO21 to the DE input of the transceiver. When GPIO21 is not an output, the isolator gives a high DE, and the transceiver drives the bus.
   - The first step of `app_main` sets GPIO21 as an output at the inactive level of DE (`gw_rs485_de_off`). It does this in each mode: normal, recovery, safe, commissioning and fault.
   - Before this step, the firmware cannot control GPIO21. This interval starts at each reset and at each restart. It contains the ROM, the bootloader and the start of the application.
-  - The interval also continues while the RESET button stays pushed.
+  - The interval also includes the time that the RESET button stays pushed.
   - During this interval, the gateway holds the bus, and no other device can transmit.
   - The bootloader does not set GPIO21, because an update of the firmware (OTA) does not change the bootloader.
   - Nobody measured the duration of the interval on the board. Refer to [Connect the RS485 bus](../how-to/connect-the-rs485-bus.md#the-rs485-port-of-the-board).
