@@ -214,15 +214,15 @@ For the keys, refer to [`local_io`](configuration.md#local_io). For the procedur
 
 ### The limit of the DO current
 
-The ULN2803A is a Darlington array. An active output has a voltage of approximately 1 V to 1.6 V, from 100 mA to 350 mA (the data sheet of TI for the ULN2803C, the same family). Each active output makes heat in the same package.
+The ULN2803A is a Darlington array. An active output has a voltage of 1.1 V at 100 mA, 1.3 V at 200 mA and 1.6 V at 350 mA (maximum values of the TI data sheet SLRS049C). Each active output makes heat in the same package.
 
 - The power of the package is the sum, for each active output, of its voltage multiplied by its current.
-- TI recommends a junction temperature below 125 °C. The thermal resistance of the SOIC package is approximately 75 °C/W.
+- The data sheet of the ULN2803A gives the thermal resistance of the SOIC package as "TBD". The data sheet of the ULN2803C (SLRS076B), the same family in a similar SOIC package, gives approximately 75 °C/W, and recommends a junction temperature below 125 °C.
 - At an ambient temperature of 50 °C, the package can thus have approximately 1 W.
 - With the eight outputs on, approximately 1 W is approximately 100 mA for each output.
 - One output alone can have its 500 mA.
 
-For larger loads, use interposing relays. The data sheet of the exact part on the board (ULN2803A, SOIC-18) is not in this calculation. Refer to #126 (L5).
+For larger loads, use interposing relays. The temperature measurement of #126 (L5) confirms or corrects this limit.
 
 ## The LED, the buzzer and the diagnostics
 
