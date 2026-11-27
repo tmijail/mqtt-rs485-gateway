@@ -121,6 +121,16 @@ For the detail, refer to [Store & forward](store-and-forward.md).
 
 For the procedure, refer to [Connect to a broker with TLS](../how-to/connect-to-a-broker-with-tls.md).
 
+## The HTTPS server of the web UI (#110, #291)
+
+- The server accepts TLS 1.2 and TLS 1.3. A TLS 1.2 client must offer a cipher suite for the key of the certificate. The self-signed certificate (EC P-256) needs ECDHE-ECDSA.
+- For TLS 1.2, `gw_webtls.c` corrects the dynamic TLS buffers of ESP-IDF v6.1. Without it, the server lost each TLS 1.2 ClientHello and sent no answer (#291).
+- The correction wraps `esp_mbedtls_free_rx_buffer`, an internal function of ESP-IDF. If a new ESP-IDF renames this function, the build fails.
+- A client that stops in its TLS handshake holds the server for `CONFIG_GW_WEB_STALL_S` (8 s). The other clients wait for this time, but they keep their sessions.
+- A client that stops after its handshake, in a request, also holds the server for 8 s. Then the watchdog closes all the sessions of the server, because it cannot find the session that holds the server.
+
+For the detail, refer to [The limits of the web server](commissioning-and-secrets.md#the-limits-of-the-web-server).
+
 ## The list of brokers (MQTT-6)
 
 - With `primary_return_s` > 0, each return to the primary broker cuts the session for a short time. This occurs also when the primary broker is still down. The gateway cannot probe a broker without a cut.

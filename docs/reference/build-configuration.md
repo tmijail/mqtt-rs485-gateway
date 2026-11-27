@@ -103,7 +103,7 @@ Thus an old `sdkconfig` can keep old values. The project has no installed gatewa
 
 | Option | Why |
 |---|---|
-| `MBEDTLS_DYNAMIC_BUFFER` | An idle TLS session keeps no record buffers in internal RAM (#80) |
+| `MBEDTLS_DYNAMIC_BUFFER` | An idle TLS session keeps no record buffers in internal RAM (#80). For a TLS 1.2 client of the HTTPS server, `gw_webtls.c` corrects these buffers (#291) |
 | `MBEDTLS_CUSTOM_MEM_ALLOC` | The mbedTLS allocations go to PSRAM (MQTT-4, #135) |
 | `UART_ISR_IN_IRAM` | The UART releases the RS485 DE line also while the cache is off (MB-2) |
 | `ESP_TASK_WDT_EN`, `_INIT`, `_TIMEOUT_S`, `_PANIC`, `_CHECK_IDLE_TASK_CPU0`, `_CHECK_IDLE_TASK_CPU1` | The task watchdog on the critical tasks and the idle tasks (REL-1) |

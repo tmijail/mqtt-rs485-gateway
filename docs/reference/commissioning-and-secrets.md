@@ -348,6 +348,7 @@ The command `web-password remove` is for a gateway whose web password nobody kno
 | Item | Value |
 |---|---|
 | HTTPS connections at the same time | 3. With `lru_purge_enable`, a new session replaces the oldest session |
+| TLS versions | TLS 1.2 and TLS 1.3 (#291). A client that offers the two versions gets TLS 1.3. A TLS 1.2 client needs a cipher suite for the key of the certificate: ECDHE-ECDSA for the self-signed certificate |
 | mbedTLS memory for each TLS session | Approximately 40 KB, in PSRAM |
 | Stack of the HTTPS server | 10 KB. The handshake and the validation of the configuration run in the same task |
 | The HTTP redirect | A second server: 3 KB of stack, 2 connections |
@@ -364,13 +365,16 @@ The command `web-password remove` is for a gateway whose web password nobody kno
 **The stall watchdog (#110).** The task `web_guard` (low priority, 2.5 KB static stack) decreases the time that a slow client holds the web server. It does not prevent it.
 
 - Each 1 s, the task asks each server, through its control socket, to set a mark in its loop. The handlers of the firmware also set the mark at their start and at their end. The discard of the body of an authenticated rejection sets it with each piece of data.
-- When a server has no mark for more than `CONFIG_GW_WEB_STALL_S` (8 s) outside a handler, the task does a `shutdown()` on the sessions of that server. It closes only the sockets whose local port is the port of that server.
+- When a server has no mark for more than `CONFIG_GW_WEB_STALL_S` (8 s) outside a handler, the task does a `shutdown()` on sessions of that server. It closes only the sockets whose local port is the port of that server.
+- A session in its TLS handshake has no TLS context yet. When such a session holds the HTTPS server, the task closes only that session (#291). The sessions of the other clients stay.
+- In the other cases, the task closes all the sessions of that server.
 - This releases the server from a slow TLS handshake, from a slowloris client, or from a client that stopped in a request.
-- The log gives `… server held for more than 8 s by a request that does not arrive`.
+- The log gives `… server held for more than 8 s by a request that does not arrive: N session(s) shut down`. For a handshake, it gives `… by a TLS handshake that does not end …: 1 session(s) in the handshake shut down, the other sessions stay`.
 
 Limits of the watchdog:
 
-- It also closes the idle sessions of the same server. The browser connects again.
+- When a request holds the server, the task also closes the idle sessions of the same server. The browser connects again.
+- While a client holds the server, the requests of the other clients wait, up to 8 s.
 - An attacker that opens one slow connection after another can continue to hold the web server, 8 s at a time.
 - There is no limit of connections for each address. The block is on the task, not on the sessions.
 - A lower `recv_wait_timeout` does not help, because the time limit applies to each read, not to each request.
