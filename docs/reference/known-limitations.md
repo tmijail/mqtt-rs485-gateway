@@ -161,6 +161,7 @@ For the procedure, refer to [Connect to a broker with TLS](../how-to/connect-to-
 - A `string` tag holds 32 characters at most (16 registers), printable ASCII only. Report by exception compares a 64-bit FNV-1a hash of the text.
 - With `scale` or `offset`, an `int64` or `uint64` tag becomes a Double, and is not exact above 2^53.
 - For the datatypes, refer to [The datatypes in Sparkplug](configuration.md#the-datatypes-in-sparkplug).
+- **Bias of the RS485 bus.** The board has no bias resistors on A and B (#18). Without a bias at one point of the bus, an idle bus with terminations floats, and the gateway can count frame errors. Refer to [Add bias, if necessary](../how-to/connect-the-rs485-bus.md#add-bias-if-necessary).
 
 ### Modbus TCP (MB-15)
 
@@ -203,9 +204,25 @@ For the keys, refer to [`syslog`](configuration.md#syslog).
 - **No answer from the expander.** The DOs are null in the NBIRTH, and the gateway refuses the NCMDs on them. The `local_io` task tries again at 1, 2, 4 … up to 60 s, also in recovery mode and in commissioning (#74).
 - **Local rules (IO-7).** The only rules are DO = DI, DO = not DI, and toggle on an edge. There are no timers, no combinations of DIs and no rules for the Modbus slaves.
 - A DO with a rule refuses the NCMD and has no safe state on MQTT loss. When the expander is down, the rules wait.
-- The polarity of the DOs (active low) comes from the demo and from ESPHome, without a schematic. If a measurement shows the opposite, set `CONFIG_GW_DO_ACTIVE_LOW=n`.
+- The polarity of the DOs (active low) comes from the demo firmware on the first board and from ESPHome. It is not measured yet (#1). If a measurement shows the opposite, set `CONFIG_GW_DO_ACTIVE_LOW=n`.
+- **The current of the DOs.** One output can sink 500 mA. The eight outputs share one ULN2803A, and its total power must stay low. Refer to [The limit of the DO current](#the-limit-of-the-do-current).
+- The ULN2803A has no protection against a short circuit or a high temperature. A short circuit of a load can destroy its output. The firmware reads the latch of the expander, not the real state of an output.
+- **The current of the DIs.** A closed contact gets less than 1 mA from DICOM. A relay contact with oxide on it can then give random changes. Use contacts for low currents (for example with gold plating) or electronic outputs.
+- **The expansion terminals.** `SDA` and `SCL` are the I²C bus of the TCA9554 and of the RTC. Do not connect field cables or other devices to them: a fault on this bus stops the control of the DOs. `IO0` is probably GPIO0, the strapping pin of the BOOT button. Do not connect it to field cables: a low level at power-on starts the download mode.
 
 For the keys, refer to [`local_io`](configuration.md#local_io). For the procedure, refer to [Set up the local inputs and outputs](../how-to/set-up-the-local-io.md).
+
+### The limit of the DO current
+
+The ULN2803A is a Darlington array. An active output has a voltage of approximately 1 V to 1.6 V, from 100 mA to 350 mA (the data sheet of TI for the ULN2803C, the same family). Each active output makes heat in the same package.
+
+- The power of the package is the sum, for each active output, of its voltage multiplied by its current.
+- TI recommends a junction temperature below 125 °C. The thermal resistance of the SOIC package is approximately 75 °C/W.
+- At an ambient temperature of 50 °C, the package can thus have approximately 1 W.
+- With the eight outputs on, approximately 1 W is approximately 100 mA for each output.
+- One output alone can have its 500 mA.
+
+For larger loads, use interposing relays. The data sheet of the exact part on the board (ULN2803A, SOIC-18) is not in this calculation. Refer to #126 (L5).
 
 ## The LED, the buzzer and the diagnostics
 

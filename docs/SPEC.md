@@ -50,7 +50,7 @@ The full comparison (in Spanish) is `docs/RECOMMENDATION.md` at the tag `archive
 | RS485 | Isolated, half-duplex, direction control with RTS | TX 17, RX 18, **RTS/DE 21** |
 | CAN | Isolated, TWAI controller. **Not used** (§2.4) | TX 2, RX 3 |
 | DI × 8 | Opto-isolated and bidirectional. They accept a dry contact or an active signal. An active input is a low level on the GPIO (pull-up) | GPIO 4–11 |
-| DO × 8 | Opto-isolated Darlington outputs that sink up to 500 mA, with a flyback diode. An active output is a low level on the pin of the expander | EXIO1–8 of a TCA9554 I²C expander at address 0x20 |
+| DO × 8 | Opto-isolated Darlington outputs (one ULN2803A) that sink up to 500 mA each, with a flyback diode. The total of the eight is lower: refer to [The limit of the DO current](reference/known-limitations.md#the-limit-of-the-do-current). An active output is a low level on the pin of the expander | EXIO1–8 of a TCA9554 I²C expander at address 0x20 |
 | RTC | PCF85063 at address 0x51, on I²C, with an interrupt | SDA 42, SCL 41, INT 40 |
 | RTC battery | A holder for a 1220 coin cell (12 mm diameter, 2 mm thickness). It accepts only a rechargeable 3 V cell, for example an ML1220. The box does not contain a cell. The gateway requires the cell (TIME-2, issue #160) | — |
 | RGB LED | WS2812, RGB byte order | GPIO 38 |
