@@ -86,8 +86,9 @@ size_t gw_cdump_b64(const uint8_t *in, size_t len, char *out, size_t cap);
  *
  * The base64 lines are as before #293: they join into the dump, and esp-coredump
  * (--core-format b64) decodes them. The first line and the END marker let a reader find a copy
- * with a lost line (#293: the USB-Serial-JTAG console of ESP-IDF drops output when the host does
- * not read for 50 ms): the number of lines, and the size and SHA-256 of the decoded bytes.
+ * with a lost line (#293: stdout on the USB-Serial-JTAG console of ESP-IDF drops output; the
+ * shell thus writes the copy into the driver, see gw_shell.c): the number of lines, and the size
+ * and SHA-256 of the decoded bytes.
  *
  * A copy that stops has no END marker. It ends with one line instead:
  *   -----CORE DUMP INCOMPLETE: <reason>-----
@@ -96,8 +97,8 @@ size_t gw_cdump_b64(const uint8_t *in, size_t len, char *out, size_t cap);
  * the bytes of the two reads are not the same (an erase during the copy), the copy stops at the
  * end with GW_CDUMP_COPY_CHANGED. */
 #define GW_CDUMP_READ_LINES  16   /* lines for each read of the partition: 912 bytes */
-/* Lines for each write to the console: 3 * (76 + "\r\n") = 234 bytes, which fit into the empty
- * 256-byte TX buffer of the USB-Serial-JTAG driver of ESP-IDF, so no byte waits for the host. */
+/* Lines for each write to the console: 3 * (76 + "\r\n") = 234 bytes. A write holds the console
+ * lock, so the log of other tasks waits a short time only. */
 #define GW_CDUMP_WRITE_LINES 3
 #define GW_CDUMP_TEXT_SIZE   256  /* the text of one write: GW_CDUMP_WRITE_LINES lines, or one line */
 

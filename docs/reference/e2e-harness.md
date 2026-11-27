@@ -221,7 +221,7 @@ Each item has a test on the board in a hardware issue (the last column). The boa
 | Item | What the QEMU build does | What only the board or the host tests examine | Issue with the test on the board |
 |---|---|---|---|
 | W5500 | `open_eth` | The W5500 driver | #18, #130 |
-| Console | UART0 (`CONFIG_ESP_CONSOLE_UART_DEFAULT` in `sdkconfig.qemu`). QEMU has no USB host | The USB-Serial-JTAG console of the board on the USB-C connector: the log, the shell and `config load`. The wait of `coredump dump` for the computer, and its stop when the computer does not read (#293) | #18, #293 |
+| Console | UART0 (`CONFIG_ESP_CONSOLE_UART_DEFAULT` in `sdkconfig.qemu`). QEMU has no USB host | The USB-Serial-JTAG console of the board on the USB-C connector: the log, the shell and `config load`. The copy of `coredump dump` directly into the USB driver, and its stop when the computer does not read (#293) | #18, #293 |
 | TCA9554, GPIO, RMT | `CONFIG_GW_IO_SIMULATED`: the DOs are in RAM, the DIs come from the `di` command, the LED is only in the log. The expander registers are in RTC memory, so they keep their values after a software restart or a panic | A real I²C failure (host tests only) | #1, #18, #126. The DOs after a panic or a watchdog reset: #129 |
 | TCA9554 absent | `expander absent <ms>` makes the model silent for the first ms of the next boot. The time starts at its first access, because `esp_timer` does not return to 0 at a software restart (#240) | — | #126 |
 | RS485 mode of the UART | The normal UART mode. `uart_wait_tx_done` causes an assert on `TX_DONE` in QEMU | The RS485 hardware mode | #18, #127 |
