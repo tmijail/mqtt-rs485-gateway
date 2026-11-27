@@ -1,5 +1,6 @@
 #include "gw_rs485.h"
 
+#include "driver/gpio.h"
 #include "driver/uart.h"
 #include "esp_check.h"
 #include "esp_attr.h"
@@ -22,8 +23,11 @@ static const char *TAG = "rs485";
 #if CONFIG_GW_RS485_HW_HALF_DUPLEX
 #define MODE_NOTE ", hardware half-duplex"
 #else
-#define MODE_NOTE ", plain UART (RTS not driven)"
+#define MODE_NOTE ", plain UART (DE always inactive)"
 #endif
+
+/* The inactive level of the DE pin: the transceiver does not drive the bus. */
+#define DE_OFF_LEVEL (gw_bsp.rs485.de_active_low ? 1U : 0U)
 
 static uint32_t s_baud;
 static uint32_t s_char_bits;
@@ -125,6 +129,22 @@ static void mask_on_restart(void)
     uart_clear_intr_status(s_port, UINT32_MAX);
 }
 
+/* Issue #287: on the board, DE of the SP3485E comes from the DE pin through an isolator whose
+ * open input gives a HIGH output. While the pin is an input (the reset, the ROM, the bootloader,
+ * the start of the application, and each mode that does not start gw_bus), the transmitter is
+ * on and holds the bus. The level is written first, so the pad becomes an output already at
+ * the inactive level. Not gpio_config(): it reserves the pin, and uart_set_pin() then logs a
+ * conflict for the RTS pin. */
+esp_err_t gw_rs485_de_off(void)
+{
+    const gpio_num_t de = gw_bsp.rs485.de;
+    ESP_RETURN_ON_ERROR(gpio_set_level(de, DE_OFF_LEVEL), TAG, "DE level");
+    ESP_RETURN_ON_ERROR(gpio_output_enable(de), TAG, "DE output");
+    ESP_LOGI(TAG, "DE GPIO%d %s: the transceiver does not drive the bus", de,
+             DE_OFF_LEVEL ? "high" : "low");
+    return ESP_OK;
+}
+
 esp_err_t gw_rs485_init(const gw_config_t *cfg, mb_transport_t *tr)
 {
     static const uart_parity_t parity[] = {UART_PARITY_DISABLE, UART_PARITY_EVEN, UART_PARITY_ODD};
@@ -146,16 +166,21 @@ esp_err_t gw_rs485_init(const gw_config_t *cfg, mb_transport_t *tr)
     ESP_RETURN_ON_ERROR(uart_driver_install(PORT, RX_BUF_SIZE, 0, 0, NULL, intr_flags), TAG,
                         "install");
     ESP_RETURN_ON_ERROR(uart_param_config(PORT, &uc), TAG, "param");
-    ESP_RETURN_ON_ERROR(uart_set_pin(PORT, gw_bsp.rs485.tx, gw_bsp.rs485.rx, gw_bsp.rs485.de,
-                                     UART_PIN_NO_CHANGE),
-                        TAG, "pins");
-    /* In RS485 half-duplex mode the driver raises RTS while sending: DE active high. */
+    /* Issue #287: the RTS signal gets its idle level before the DE pin goes to the UART, so
+     * the change from the GPIO (gw_rs485_de_off) to RTS gives no pulse on DE. After the reset
+     * of the UART the software RTS (SW_RTS = 0) gives a HIGH pin. SW_RTS = 1 gives a LOW pin, and
+     * the RS485 half-duplex mode keeps it so between two frames. In this mode the UART raises
+     * RTS while it sends: DE active high. RTS_INV gives the levels of an active-low DE. */
     if (gw_bsp.rs485.de_active_low) {
         ESP_RETURN_ON_ERROR(uart_set_line_inverse(PORT, UART_SIGNAL_RTS_INV), TAG, "DE polarity");
     }
+    ESP_RETURN_ON_ERROR(uart_set_rts(PORT, 1), TAG, "DE idle");
 #if CONFIG_GW_RS485_HW_HALF_DUPLEX
     ESP_RETURN_ON_ERROR(uart_set_mode(PORT, UART_MODE_RS485_HALF_DUPLEX), TAG, "rs485 mode");
 #endif
+    ESP_RETURN_ON_ERROR(uart_set_pin(PORT, gw_bsp.rs485.tx, gw_bsp.rs485.rx, gw_bsp.rs485.de,
+                                     UART_PIN_NO_CHANGE),
+                        TAG, "pins");
     ESP_RETURN_ON_ERROR(uart_set_rx_timeout(PORT, RX_TOUT_SYMBOLS), TAG, "rx timeout");
     s_port = PORT;
     ESP_RETURN_ON_ERROR(esp_register_shutdown_handler(mask_on_restart), TAG, "shutdown handler");

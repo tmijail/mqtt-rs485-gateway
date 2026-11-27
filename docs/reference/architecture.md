@@ -12,7 +12,7 @@ The components are in [`idf/components/`](https://github.com/tmijail/mqtt-rs485-
 |---|---|---|
 | `gw_core` | Pure C logic with no IDF. Refer to [The modules of `gw_core`](#the-modules-of-gw_core) | No. Only [`port/gw_port_esp.c`](https://github.com/tmijail/mqtt-rs485-gateway/blob/main/idf/components/gw_core/port/gw_port_esp.c) uses IDF. The host tests use [`port/gw_port_posix.c`](https://github.com/tmijail/mqtt-rs485-gateway/blob/main/idf/components/gw_core/port/gw_port_posix.c) |
 | `nanopb` | The vendored nanopb 0.4.9.1 runtime (Zlib license) | No |
-| `gw_rs485` | UART1 in `UART_MODE_RS485_HALF_DUPLEX` (RTS = GPIO21), as an `mb_transport_t` | Yes |
+| `gw_rs485` | UART1 in `UART_MODE_RS485_HALF_DUPLEX` (RTS = GPIO21), as an `mb_transport_t`. Before that, the first step of `app_main` sets the DE pin to its inactive level in each mode (`gw_rs485_de_off`, #287) | Yes |
 | `gw_bus` | The task that is the **only owner of the RS485 bus**: the polling, the DCMD writes, the Modbus TCP requests and the test reads (MB-16) | Yes |
 | `gw_edge` | The Sparkplug task: the esp-mqtt client (TLS, MQTT 5, broker list), bdSeq, the Will, the backoff, the primary host, store & forward, the time limit of each publish, and the `gw_node` engine | Yes |
 | `gw_net` | The W5500 on SPI (openeth in QEMU). The optional Wi-Fi STA, as the primary interface or as a backup (NET-4). DHCP or a static IP address for each interface. The optional IPv6, with SLAAC and a static address (NET-7). The default route from `gw_netsel`. SNTP with 1 to 3 servers (#201). The scan of the Wi-Fi networks for the web UI, also with `network.wifi` off (#208). The Wi-Fi driver at each boot, as the entropy source of the RNG (#267) | Yes |
