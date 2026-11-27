@@ -38,10 +38,11 @@ The page [Flash the firmware from the browser](../how-to/flash-the-firmware-from
 
 ## The shell on the USB console (#293)
 
-- The USB-Serial-JTAG driver of ESP-IDF drops console output when the computer does not read for 50 ms. A long answer of the shell, for example `config show` or `help`, can thus lose lines. The answer does not show the loss.
-- `coredump dump` is protected: it waits for the computer, and it gives the size, the number of lines and the SHA-256 of the dump. Refer to [The core dump](../explanation/core-dump.md#the-copy-at-the-console).
+- The standard output of ESP-IDF on the USB-Serial-JTAG console can lose complete lines. The connection monitor of ESP-IDF can report a short disconnection while the cable stays connected, and the console then writes nothing. The driver also drops output when the computer does not read for 50 ms.
+- Thus the log and a long answer of the shell, for example `config show` or `help`, can lose lines. The answer does not show the loss.
+- `coredump dump` is protected: it writes directly into the USB driver, and it gives the size, the number of lines and the SHA-256 of the dump. Refer to [The core dump](../explanation/core-dump.md#the-copy-at-the-console).
 - If the computer does not read for 3 s, `coredump dump` stops without the END marker. Use `GET /api/coredump` when a network is available.
-- Nobody examined the wait for the computer on the board yet. QEMU has no USB console.
+- QEMU has no USB console. Only the board can examine these items.
 
 ## Memory (REL-2)
 

@@ -30,18 +30,21 @@ The summary also gives the reset reason of this boot. The dump can be older than
 
 ## The copy at the console
 
-The console of the board is the USB-Serial-JTAG peripheral of the chip. The driver of ESP-IDF v6.1 has a TX buffer of 256 bytes. When the buffer is full, the driver waits at most 50 ms for the host. Then it drops the output until the host reads again. Thus the console cannot stop the gateway when no program reads it.
+The console of the board is the USB-Serial-JTAG peripheral of the chip. In ESP-IDF v6.1, the standard output (`stdout`) of this console can lose text in two ways:
 
-On the first board, `coredump dump` lost complete lines when the computer did not read the console in time (#293). The copy still had the END marker, so it looked complete. The download through the REST API had no error.
+- The console driver writes nothing while the connection monitor of ESP-IDF reports that no computer is connected. The monitor can report a short disconnection while the cable stays connected. `stdout` writes each line separately, so a complete line is lost.
+- The driver has a TX buffer of 256 bytes. When the buffer is full, the driver waits at most 50 ms for the computer. Then it drops the output until the computer reads again. Thus the console cannot stop the gateway when no program reads it.
+
+On the first board, `coredump dump` lost groups of complete lines (#293). The copy still had the END marker, so it looked complete. The download through the REST API had no error.
 
 Thus `coredump dump` has two protections:
 
 - **The copy shows its integrity.** The first line gives the size of the dump, the number of base64 lines and the SHA-256 of the dump. The END marker gives the number of lines again. A reader compares these values with the copy, and thus finds a missing line or a changed line. The base64 lines did not change, so `esp-coredump --core-format b64` decodes them as before.
-- **The copy waits for the computer.** Before each write of three lines at most, the command waits until the computer read all of the earlier output. Three lines fit into the empty TX buffer, so the driver drops no byte. If the computer does not read for 3 s, or the copy takes more than 120 s, the command stops. It then writes `-----CORE DUMP INCOMPLETE: …-----` in place of the END marker.
+- **The copy does not use `stdout`.** The command puts the copy directly into the TX buffer of the driver. This path has no connection check and drops nothing. When the buffer is full, the command waits for the computer. If the computer does not read for 3 s, or the copy takes more than 120 s, the command stops. It then writes `-----CORE DUMP INCOMPLETE: …-----` in place of the END marker.
 
 The command reads the dump two times. The first read gives the SHA-256 for the first line, and the second read gives the lines. If the bytes of the two reads are not the same, the copy stops without the END marker. This occurs only when an erase occurs during the copy.
 
-The QEMU build has the console on a UART, which never drops output. There the command does not wait. The E2E examines the format of the copy in QEMU. Only the board can examine the wait for the computer (refer to [The E2E test bench](../reference/e2e-harness.md#what-qemu-does-not-cover)).
+The QEMU build has the console on a UART, which never drops output. There the command uses `stdout`. The E2E examines the format of the copy in QEMU. Only the board can examine the path through the USB driver (refer to [The E2E test bench](../reference/e2e-harness.md#what-qemu-does-not-cover)).
 
 Other long answers of the shell, for example `config show` and `help`, have no such protections. Refer to [Known limitations](../reference/known-limitations.md#the-shell-on-the-usb-console-293).
 
