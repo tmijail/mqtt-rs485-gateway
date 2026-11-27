@@ -18,10 +18,10 @@ You need:
 | Item | Data | Source | Status |
 |---|---|---|---|
 | UART and pins | UART1: TX GPIO17, RX GPIO18, DE (RTS) GPIO21. The UART runs in the RS485 half-duplex mode | `idf/components/gw_bsp/gw_bsp.c`, Waveshare demo ([Board data to verify](../reference/board-data-to-verify.md#the-data)) | Compile-only |
-| Isolation | The RS485 port is isolated from the ESP32-S3. The board has an integrated isolated power supply | Waveshare wiki: "Onboard isolated RS485 interface" | Not verified on the board, see #127 |
-| Terminals | A, B and a common terminal (GND). Read the labels that are printed on the board | General RS485 practice | Not verified on the board, see #127 |
-| Termination | A 120 Ω resistor between A and B, behind a jumper with the label 120R. The jumper is open at delivery | Waveshare FAQ, board review of #183 | Not verified on the board, see #127 |
-| Bias (fail-safe) | The Waveshare documentation shows no bias resistors | Board review of #183 | Not verified on the board, see #127 |
+| Isolation | The RS485 port is isolated from the ESP32-S3. The board has an integrated isolated power supply. The transceiver is an SP3485E | Waveshare wiki, inspection of the first board (#18) | Verified with a continuity test on the first board |
+| Terminals | `A+`, `B-` and a common terminal with the ground symbol (⏚). The common terminal is the isolated ground of the port | Labels on the board, inspection of the first board (#18) | Verified on the first board |
+| Termination | A 120 Ω resistor between A and B, behind a jumper with the positions `NC` and `120R`. The jumper is on `NC` at delivery | Waveshare FAQ, inspection of the first board (#18) | Verified with a resistance measurement on the first board |
+| Bias (fail-safe) | No bias resistors. The resistance between A and B without power and with `NC` is too high for a bias network | Inspection of the first board (#18) | Probable. The idle voltage of the bus is not measured, see #127 |
 | Indicator | An LED shows the TX and RX activity of the RS485 port | Waveshare wiki | Not verified on the board, see #127 |
 
 The Waveshare FAQ tells you to move the jumper to 120R if the devices do not answer. It also says that some devices need "a 120R resistor to be connected in series". This text is not correct. A termination resistor connects between A and B, in parallel with the bus.
@@ -58,7 +58,7 @@ Put one termination at each of the two ends of the line. Do not put a terminatio
 6. Remove the power from all devices.
 7. Measure the resistance between A and B. With two terminations of 120 Ω, the result is approximately 60 Ω.
 
-A result of approximately 120 Ω shows one termination only. A result of approximately 40 Ω or less shows three or more terminations. Bias resistors also decrease the result a little. The value of the 120R jumper is not verified on the board, see #127.
+A result of approximately 120 Ω shows one termination only. A result of approximately 40 Ω or less shows three or more terminations. Bias resistors also decrease the result a little.
 
 At a low baud rate and on a short cable, a bus can operate without termination. A long cable or a high baud rate causes reflections, and the gateway then counts CRC errors.
 
@@ -69,7 +69,7 @@ When no device transmits, no transceiver drives the bus. Then noise can look lik
 - Many new transceivers have a "true fail-safe" receiver. A bus with only such transceivers does not need bias.
 - If a device has a bias switch, close it at one device only.
 - The Modbus specification says: put the bias at one point of the bus only. Use a resistor of 450 Ω to 650 Ω from D1 to 5 V and the same from D0 to the common.
-- The Waveshare documentation shows no bias resistors on the gateway. If the bus needs bias, put it at a device or in a separate bias module. Not verified on the board, see #127.
+- The gateway has no bias resistors (inspection of the first board, #18). If the bus needs bias, put it at a device or in a separate bias module. #127 measures the idle voltage of the bus.
 
 ## Configure the gateway
 
