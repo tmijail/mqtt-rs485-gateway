@@ -78,7 +78,7 @@ The source is in [`idf/components/gw_core/src/`](https://github.com/tmijail/mqtt
 | | `gw_clock` | The sources of the clock, when the clock is valid, the time from the browser and the hints for the operator (TIME-1, #160) |
 | Log and diagnostics | `gw_syslog` | The conversion of log lines to RFC 5424, and a bounded ring (REL-4) |
 | | `gw_logring` | The ring of the live log, the tag of a log line, the table of the log levels and the request that changes a level (#199, #200) |
-| | `gw_cdump` | The state and the summary of the core dump, and the base64 lines of `coredump dump` (REL-1, #132) |
+| | `gw_cdump` | The state and the summary of the core dump, and the copy of `coredump dump` with its size, number of lines and SHA-256 (REL-1, #132, #293) |
 | Firmware update | `gw_ota` | The trial of a new image (self-check, expected mode), the pre-flight check of an image, the update URLs and the progress (FW-1, #144) |
 | | `gw_bootloop`, `gw_fwlast` | The boot-loop counter, and the record of the last update (#144) |
 | | `gw_nvsraw` | NVS, encrypted or not encrypted, read from its raw pages (#67) |

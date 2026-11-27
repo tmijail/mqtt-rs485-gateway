@@ -58,13 +58,14 @@ Make sure that `curl` ended without an error. An incomplete transfer means that 
 
 ## Copy the dump from the console
 
-Use this method when the gateway has no network.
+Use this method only when the gateway has no network. The download through the network is better: HTTPS and `curl` find a transfer error. The console copy has only the checks of step 7.
 
 1. Connect the computer to the USB-C port of the gateway.
 2. Open a terminal program that saves the received text to a file, for example `idf.py monitor` or `picocom --logfile console.log`.
 3. Type `coredump dump`.
-4. Wait for the line `-----END CORE DUMP-----`.
-5. Keep the lines between `-----BEGIN CORE DUMP-----` and `-----END CORE DUMP-----` that have only base64 characters:
+4. Wait for the line that starts with `-----END CORE DUMP-----`.
+5. Make sure that the copy has the END marker. If the copy ends with a line `-----CORE DUMP INCOMPLETE: …-----`, do the steps again from step 3.
+6. Keep the lines between `-----BEGIN CORE DUMP-----` and `-----END CORE DUMP-----` that have only base64 characters:
 
    ```bash
    tr -d '\r' < console.log \
@@ -72,7 +73,29 @@ Use this method when the gateway has no network.
      | grep -E '^[A-Za-z0-9+/=]+$' > coredump.b64
    ```
 
+7. Examine the copy:
+
+   ```bash
+   wc -l < coredump.b64
+   base64 -d coredump.b64 | wc -c
+   base64 -d coredump.b64 | sha256sum
+   ```
+
+8. Compare the three results with the first line of the command:
+
+   ```text
+   coredump: 38512 bytes (valid), 676 lines of base64, sha256 3f2a…
+   ```
+
+   - The number of lines must be the same as the number of lines in the first line and in the END marker.
+   - The number of bytes must be the same as the size.
+   - The SHA-256 must be the same.
+
+9. If one of the values is different, delete the copy, and do the steps again from step 3. A different value tells that a line is missing or changed.
+
 The log lines of other tasks can come between the base64 lines. They have spaces, so the `grep` command removes them.
+
+If the copy stops with `-----CORE DUMP INCOMPLETE: the console did not read the output in time-----`, the computer did not read the console for some seconds. Close the programs that make the computer slow, and type `coredump dump` again. For the reasons, refer to [The core dump](../explanation/core-dump.md#the-copy-at-the-console).
 
 ## Decode the dump
 
