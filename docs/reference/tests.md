@@ -124,7 +124,7 @@ The checks have these limits:
 | `test_claim` | CFG-3 / NET-5 (#120): the claim window and the password rules |
 | `test_wpa` | NET-5 (#187): SHA-1, HMAC-SHA1, PBKDF2-HMAC-SHA1, the WPA2 PMK vectors, the SSID. #269: the order of the writes of the hash of the web password and of its PMK, with a cut after each write, and the rule that the access point uses a PMK only with a web password |
 | `test_aplife` | NET-5 (#187): the life of the access point, with a fake clock |
-| `test_cdump` | REL-1 (#132): base64 of the core dump, the status and summary JSON |
+| `test_cdump` | REL-1 (#132): base64 of the core dump, the status and summary JSON. #293: the copy of `coredump dump` (the size, the number of lines and the SHA-256, the decode of the lines, and the stop after a read error, a changed dump or a console that does not read) |
 | `test_mbdiag` | #182: `POST /api/modbus/read` |
 | `test_nvsraw` | The raw NVS pages: plaintext, encrypted and mixed partitions (#67, #94, #107, #109), the migration copy, the boot decision, `may_erase`, the copy out of reach (#104, #108), FULL and FREEING pages (#97), a lost namespace entry (#185) |
 | `test_cardfmt` | #137, #139: the format requests of the card, and their text and JSON |

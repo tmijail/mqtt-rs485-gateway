@@ -45,6 +45,10 @@
 #include "gw_wpa.h"
 #include "lwip/ip_addr.h"
 #include "ping/ping_sock.h"
+#include "sdkconfig.h"
+#if CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG
+#include "driver/usb_serial_jtag.h"   /* #293: coredump dump writes into the driver */
+#endif
 
 static const char *TAG = "shell";
 
@@ -1234,7 +1238,78 @@ static int cmd_ping(int argc, char **argv)
  * erases it (a write command). The dump is a copy of the RAM at the crash and can hold secrets
  * in clear text. The console needs physical access to the board, and that access also reads
  * all of the flash through USB: the shell asks for no password (the web API does). */
-#define CD_LINES_PER_READ 16   /* 912 bytes per flash read, 16 lines */
+/* #293: on the USB-Serial-JTAG console, stdout of ESP-IDF v6.1 loses output in two ways:
+ * - the VFS write() (usb_serial_jtag_vfs.c) returns EIO, and writes nothing, while
+ *   usb_serial_jtag_is_connected() is false. The connection monitor
+ *   (usb_serial_jtag_connection_monitor.c) sets it false at a tick without a USB start-of-frame
+ *   after it used up 3 ticks of tolerance, and it gives the tolerance back only after a
+ *   disconnection. Ticks without a start-of-frame (tick jitter at 1000 Hz) thus give short false
+ *   disconnections with the cable connected. stdout is line-buffered (picolibc), so each failed
+ *   write() drops complete lines. A failed write() takes no time, so the copy lost runs of
+ *   complete lines, and it still had the END marker (the probable cause of #293);
+ * - a character that waits more than 50 ms for room in the 256-byte TX buffer is dropped
+ *   (TX_FLUSH_TIMEOUT_US), when the computer does not read in time.
+ * The copy thus goes past stdout, straight into the TX buffer of the driver
+ * (usb_serial_jtag_write_bytes: no connection check, nothing dropped), in pieces that fit into
+ * it. A piece waits at most CD_HOST_WAIT_MS for room; then, or after CD_COPY_MAX_MS, the copy
+ * stops without the END marker. The UART console of the QEMU build loses nothing (it waits for
+ * the FIFO), so there the copy uses stdout. */
+#define CD_HOST_WAIT_MS 3000
+#define CD_COPY_MAX_MS  120000   /* the bound of the whole copy */
+#define CD_PIECE        64       /* bytes of one write into the 256-byte TX buffer of the driver */
+
+typedef struct {
+    int64_t deadline_us;
+} cd_copy_ctx_t;
+
+static const char *cd_read(void *ctx, uint32_t off, uint8_t *buf, size_t len)
+{
+    (void)ctx;
+    esp_err_t e = gw_coredump_read(off, buf, len);
+    return e == ESP_OK ? NULL : esp_err_to_name(e);
+}
+
+#if CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG
+/* @p text into the TX buffer of the driver, with "\r\n" for each "\n" (as the VFS of the
+ * console does). False when a piece did not get room in CD_HOST_WAIT_MS. */
+static bool cd_put_usj(const char *text, size_t len)
+{
+    char piece[CD_PIECE + 1];
+    size_t n = 0;
+    for (size_t i = 0; i < len; i++) {
+        if (text[i] == '\n') {
+            piece[n++] = '\r';
+        }
+        piece[n++] = text[i];
+        if (n >= CD_PIECE || i + 1 == len) {
+            if (usb_serial_jtag_write_bytes(piece, n, pdMS_TO_TICKS(CD_HOST_WAIT_MS)) != (int)n) {
+                return false;
+            }
+            n = 0;
+        }
+    }
+    return true;
+}
+#endif
+
+static bool cd_write(void *ctx, const char *text, size_t len)
+{
+    const cd_copy_ctx_t *c = ctx;
+    out_flush();
+    xSemaphoreTakeRecursive(s_console, portMAX_DELAY);
+    bool ok = esp_timer_get_time() < c->deadline_us;
+    if (ok) {
+        fflush(stdout);   /* the earlier output of stdout goes first */
+#if CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG
+        ok = cd_put_usj(text, len);
+#else
+        fwrite(text, 1, len, stdout);
+        fflush(stdout);
+#endif
+    }
+    xSemaphoreGiveRecursive(s_console);
+    return ok;
+}
 
 static int coredump_dump(void)
 {
@@ -1249,38 +1324,20 @@ static int coredump_dump(void)
             "'coredump erase' erases it\n");
         return 1;
     }
-    const size_t chunk = CD_LINES_PER_READ * GW_CDUMP_LINE_BYTES;
-    uint8_t *bin = gw_storage_malloc(chunk);
-    if (bin == NULL) {
+    gw_cdump_work_t *w = gw_storage_malloc(sizeof(*w));
+    if (w == NULL) {
         out("coredump: no memory\n");
         return 1;
     }
-    out("coredump: %lu bytes (%s) in base64 between the two marker lines. It can contain "
-        "secrets (passwords, keys): keep the copy safe\n",
-        (unsigned long)size, gw_cdump_state_name(st));
-    out("-----BEGIN CORE DUMP-----\n");
-    int rc = 0;
-    for (uint32_t off = 0; off < size; off += (uint32_t)chunk) {
-        size_t n = size - off < chunk ? size - off : chunk;
-        esp_err_t e = gw_coredump_read(off, bin, n);
-        if (e != ESP_OK) {
-            out("-----CORE DUMP INCOMPLETE: %s-----\n", esp_err_to_name(e));
-            rc = 1;
-            break;
-        }
-        for (size_t k = 0; k < n; k += GW_CDUMP_LINE_BYTES) {
-            char line[GW_CDUMP_LINE_CHARS + 1];
-            gw_cdump_b64(bin + k, n - k < GW_CDUMP_LINE_BYTES ? n - k : GW_CDUMP_LINE_BYTES, line,
-                         sizeof(line));
-            out("%s\n", line);
-        }
+    cd_copy_ctx_t c = {.deadline_us = esp_timer_get_time() + (int64_t)CD_COPY_MAX_MS * 1000};
+    const gw_cdump_io_t io = {.ctx = &c, .read = cd_read, .write = cd_write};
+    gw_cdump_copy_t rc = gw_cdump_copy(&io, st, size, w);   /* zeroes w */
+    heap_caps_free(w);
+    if (rc == GW_CDUMP_COPY_STALLED) {
+        ESP_LOGW(TAG, "coredump dump: the console did not read the output in time, the copy "
+                      "stopped (#293)");
     }
-    memset(bin, 0, chunk);
-    heap_caps_free(bin);
-    if (rc == 0) {
-        out("-----END CORE DUMP-----\n");
-    }
-    return rc;
+    return rc == GW_CDUMP_COPY_OK ? 0 : 1;
 }
 
 /* Issue #256: the summary maps the coredump partition; in the QEMU build it runs on core 0 with

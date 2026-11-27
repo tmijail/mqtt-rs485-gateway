@@ -192,3 +192,128 @@ size_t gw_cdump_b64(const uint8_t *in, size_t len, char *out, size_t cap)
     out[n] = '\0';
     return n;
 }
+
+/* ---------- 'coredump dump' (#132, #293) ---------- */
+
+_Static_assert(GW_CDUMP_WRITE_LINES * (GW_CDUMP_LINE_CHARS + 1) + 1 <= GW_CDUMP_TEXT_SIZE,
+               "the lines of one write fit into the text buffer");
+_Static_assert(GW_CDUMP_LINE_BYTES % 3 == 0 && GW_CDUMP_LINE_CHARS == GW_CDUMP_LINE_BYTES / 3 * 4,
+               "a complete line has no '=' padding, so the lines join into one base64 text");
+
+uint32_t gw_cdump_line_count(uint32_t size)
+{
+    return size / GW_CDUMP_LINE_BYTES + (size % GW_CDUMP_LINE_BYTES != 0 ? 1u : 0u);
+}
+
+/* One line through io->write; false when the console did not take it. */
+static bool say(const gw_cdump_io_t *io, gw_cdump_work_t *w, const char *fmt, ...)
+    __attribute__((format(printf, 3, 4)));
+
+static bool say(const gw_cdump_io_t *io, gw_cdump_work_t *w, const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(w->text, sizeof(w->text), fmt, ap);
+    va_end(ap);
+    if (n < 0) {
+        return false;
+    }
+    size_t len = (size_t)n < sizeof(w->text) ? (size_t)n : sizeof(w->text) - 1;
+    return io->write(io->ctx, w->text, len);
+}
+
+/* One pass over the dump: the SHA-256 of its bytes into w->sha. With @p print, also the base64
+ * lines through io->write, GW_CDUMP_WRITE_LINES lines in each write. Returns GW_CDUMP_COPY_OK,
+ * _READ (with *err set) or _STALLED. */
+static gw_cdump_copy_t pass(const gw_cdump_io_t *io, uint32_t size, gw_cdump_work_t *w,
+                            bool print, const char **err)
+{
+    const uint32_t chunk = (uint32_t)sizeof(w->bin);
+    size_t tlen = 0;
+    unsigned lines = 0;
+    *err = NULL;
+    gw_sha256_init(&w->sha);
+    for (uint32_t off = 0; off < size; off += chunk) {
+        size_t n = size - off < chunk ? size - off : chunk;
+        *err = io->read(io->ctx, off, w->bin, n);
+        if (*err != NULL) {
+            break;
+        }
+        gw_sha256_update(&w->sha, w->bin, n);
+        for (size_t k = 0; print && k < n; k += GW_CDUMP_LINE_BYTES) {
+            size_t m = n - k < GW_CDUMP_LINE_BYTES ? n - k : GW_CDUMP_LINE_BYTES;
+            tlen += gw_cdump_b64(w->bin + k, m, w->text + tlen, sizeof(w->text) - tlen);
+            w->text[tlen++] = '\n';
+            if (++lines == GW_CDUMP_WRITE_LINES) {
+                if (!io->write(io->ctx, w->text, tlen)) {
+                    return GW_CDUMP_COPY_STALLED;
+                }
+                tlen = 0;
+                lines = 0;
+            }
+        }
+    }
+    /* the lines before the end, or before a read error */
+    if (tlen > 0 && !io->write(io->ctx, w->text, tlen)) {
+        return GW_CDUMP_COPY_STALLED;
+    }
+    return *err != NULL ? GW_CDUMP_COPY_READ : GW_CDUMP_COPY_OK;
+}
+
+gw_cdump_copy_t gw_cdump_copy(const gw_cdump_io_t *io, gw_cdump_state_t state, uint32_t size,
+                              gw_cdump_work_t *w)
+{
+    static const char hexd[] = "0123456789abcdef";
+    uint8_t first[GW_SHA256_LEN];
+    uint8_t second[GW_SHA256_LEN];
+    char hex[2 * GW_SHA256_LEN + 1];
+    const char *err = NULL;
+    const uint32_t lines = gw_cdump_line_count(size);
+
+    /* the first read: the SHA-256 for the first line */
+    gw_cdump_copy_t rc = pass(io, size, w, false, &err);
+    if (rc == GW_CDUMP_COPY_OK) {
+        gw_sha256_final(&w->sha, first);
+        for (size_t i = 0; i < GW_SHA256_LEN; i++) {
+            hex[2 * i] = hexd[first[i] >> 4];
+            hex[2 * i + 1] = hexd[first[i] & 15u];
+        }
+        hex[2 * GW_SHA256_LEN] = '\0';
+        if (!say(io, w, "coredump: %lu bytes (%s), %lu lines of base64, sha256 %s\n",
+                 (unsigned long)size, gw_cdump_state_name(state), (unsigned long)lines, hex) ||
+            !say(io, w, "coredump: the dump can contain secrets (passwords, keys): keep the "
+                        "copy safe\n") ||
+            !say(io, w, "-----BEGIN CORE DUMP-----\n")) {
+            rc = GW_CDUMP_COPY_STALLED;
+        }
+    }
+    /* the second read: the lines, and the SHA-256 again */
+    if (rc == GW_CDUMP_COPY_OK) {
+        rc = pass(io, size, w, true, &err);
+    }
+    if (rc == GW_CDUMP_COPY_OK) {
+        gw_sha256_final(&w->sha, second);
+        if (memcmp(first, second, sizeof(first)) != 0) {
+            rc = GW_CDUMP_COPY_CHANGED;
+        } else if (!say(io, w, "-----END CORE DUMP----- %lu lines\n", (unsigned long)lines)) {
+            rc = GW_CDUMP_COPY_STALLED;
+        }
+    }
+    switch (rc) {
+    case GW_CDUMP_COPY_READ:
+        (void)say(io, w, "-----CORE DUMP INCOMPLETE: %s-----\n", err != NULL ? err : "?");
+        break;
+    case GW_CDUMP_COPY_CHANGED:
+        (void)say(io, w, "-----CORE DUMP INCOMPLETE: the dump changed during the copy-----\n");
+        break;
+    case GW_CDUMP_COPY_STALLED:
+        /* the console can take it later; if it does not, the END marker is absent also */
+        (void)say(io, w, "-----CORE DUMP INCOMPLETE: the console did not read the output in "
+                         "time-----\n");
+        break;
+    default:
+        break;
+    }
+    memset(w, 0, sizeof(*w));   /* the dump can hold secrets */
+    return rc;
+}

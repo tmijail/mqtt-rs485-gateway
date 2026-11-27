@@ -7750,12 +7750,18 @@ def check_core_dump_api(gw, obs, args, work, nb, since, ndata_t, off):
                                     r"^reason {4}abort\(\) was called at PC 0x"])
     t_dump = time.monotonic()
     gw.console("coredump dump")
-    end = gw.wait_log(r"^-----END CORE DUMP-----$", 60, t_dump)
+    end = gw.wait_log(r"^-----END CORE DUMP----- \d+ lines$", 60, t_dump)
     lines = [ln for t, ln in list(gw.lines) if t >= t_dump]
+    # issue #293: the first line gives the size, the number of lines and the SHA-256, and the END
+    # marker the number of lines again, so that a reader finds a copy with a lost line
+    head = next((m for m in (re.search(r"coredump: (\d+) bytes \((\w+)\), (\d+) lines of base64, "
+                                       r"sha256 ([0-9a-f]{64})$", ln) for ln in lines) if m), None)
     begin = next((i for i, ln in enumerate(lines) if ln.endswith("-----BEGIN CORE DUMP-----")), None)
-    stop = next((i for i, ln in enumerate(lines) if ln == "-----END CORE DUMP-----"), None)
+    stop = next((i for i, ln in enumerate(lines)
+                 if re.fullmatch(r"-----END CORE DUMP----- \d+ lines", ln)), None)
     b64 = [ln for ln in lines[begin + 1:stop] if re.fullmatch(r"[A-Za-z0-9+/=]+", ln)] \
         if begin is not None and stop is not None else []
+    end_lines = int(lines[stop].split()[3]) if stop is not None else None
     b64_file = work / "coredump-console.b64"
     b64_file.write_text("".join(f"{ln}\n" for ln in b64))
     try:
@@ -7764,13 +7770,20 @@ def check_core_dump_api(gw, obs, args, work, nb, since, ndata_t, off):
         console = b""
     console_decoded = bool(b64) and esp_coredump_info(args, b64_file, "b64",
                                                       work / "coredump-console-info.txt")
+    want_lines = (len(dump) + 56) // 57
+    integrity = head is not None and int(head[1]) == len(dump) and head[2] == "valid" \
+        and int(head[3]) == want_lines == len(b64) == end_lines \
+        and head[4] == hashlib.sha256(console).hexdigest() == hashlib.sha256(dump).hexdigest()
     check("Issue #132 shell 'coredump' (summary: size, task, backtrace, reason) and 'coredump "
           "dump' (the dump in base64 lines between two markers: the same bytes as the download, "
-          "decoded by esp_coredump --core-format b64)",
-          all(hits.values()) and end and console == dump and bool(dump) and console_decoded,
+          "decoded by esp_coredump --core-format b64); #293: the first line gives the size, the "
+          "number of lines and the SHA-256 of the dump, and the END marker the number of lines",
+          all(hits.values()) and end and console == dump and bool(dump) and console_decoded
+          and integrity,
           f"summary lines missing: {[p for p, t in hits.items() if t is None] or 'none'}; "
           f"dump end marker {'yes' if end else 'no'}, {len(b64)} lines, {len(console)} B, same "
-          f"as the download {console == dump}, decoded {console_decoded}")
+          f"as the download {console == dump}, decoded {console_decoded}; first line "
+          f"{head[0] if head else None!r}, END marker lines {end_lines}, want {want_lines} lines")
 
     # erase: the CSRF check first, then the dump goes and the metric follows
     f_st, _, _ = http("DELETE", "/api/coredump", auth=auth, headers={"X-Requested-With": None})
