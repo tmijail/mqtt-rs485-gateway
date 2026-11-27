@@ -50,6 +50,7 @@
 #include "sdkconfig.h"
 #if CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG
 #include "driver/usb_serial_jtag.h"   /* #293: coredump dump waits for the host */
+#include "esp_rom_sys.h"
 #endif
 
 static const char *TAG = "shell";
@@ -1263,21 +1264,86 @@ static const char *cd_read(void *ctx, uint32_t off, uint8_t *buf, size_t len)
     return e == ESP_OK ? NULL : esp_err_to_name(e);
 }
 
+/* DIAG (#293, test build only): mode 0 = fwrite (the PR), 1 = the driver directly */
+static struct {
+    int mode;
+    unsigned writes, shorts, ferrs, notconn, waitfail, drvshort;
+} s_cd_diag;
+
 static bool cd_write(void *ctx, const char *text, size_t len)
 {
     const cd_copy_ctx_t *c = ctx;
     out_flush();
     xSemaphoreTakeRecursive(s_console, portMAX_DELAY);
     bool ok = esp_timer_get_time() < c->deadline_us;
-#if CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG
-    ok = ok && usb_serial_jtag_wait_tx_done(pdMS_TO_TICKS(CD_HOST_WAIT_MS)) == ESP_OK;
-#endif
-    if (ok) {
-        fwrite(text, 1, len, stdout);
+    s_cd_diag.writes++;
+    if (!usb_serial_jtag_is_connected()) {
+        s_cd_diag.notconn++;
+    }
+    if (s_cd_diag.mode == 0) {
+        bool waited = usb_serial_jtag_wait_tx_done(pdMS_TO_TICKS(CD_HOST_WAIT_MS)) == ESP_OK;
+        if (!waited) {
+            s_cd_diag.waitfail++;
+        }
+        ok = ok && waited;
+        if (ok) {
+            if (!usb_serial_jtag_is_connected()) {
+                s_cd_diag.notconn++;
+            }
+            size_t n = fwrite(text, 1, len, stdout);
+            if (n != len) {
+                s_cd_diag.shorts++;
+            }
+            fflush(stdout);
+            if (ferror(stdout)) {
+                s_cd_diag.ferrs++;
+                clearerr(stdout);
+            }
+        }
+    } else if (ok) {
+        static char crlf[GW_CDUMP_TEXT_SIZE + GW_CDUMP_WRITE_LINES + 8];
+        size_t m = 0;
+        for (size_t i = 0; i < len && m + 2 < sizeof(crlf); i++) {
+            if (text[i] == '\n') {
+                crlf[m++] = '\r';
+            }
+            crlf[m++] = text[i];
+        }
         fflush(stdout);
+        int n = usb_serial_jtag_write_bytes(crlf, m, pdMS_TO_TICKS(CD_HOST_WAIT_MS));
+        if (n != (int)m) {
+            s_cd_diag.drvshort++;
+            ok = false;
+        }
     }
     xSemaphoreGiveRecursive(s_console);
     return ok;
+}
+
+/* DIAG: sample usb_serial_jtag_is_connected() each tick for N seconds */
+static int cmd_usjprobe(int argc, char **argv)
+{
+    int secs = argc == 2 ? atoi(argv[1]) : 5;
+    unsigned samples = 0, falses = 0, edges = 0;
+    bool last = true;
+    int64_t end = esp_timer_get_time() + (int64_t)secs * 1000000;
+    while (esp_timer_get_time() < end) {
+        bool c = usb_serial_jtag_is_connected();
+        samples++;
+        if (!c) {
+            falses++;
+        }
+        if (last && !c) {
+            edges++;
+        }
+        last = c;
+        esp_rom_delay_us(200);
+        if (samples % 50 == 0) {
+            vTaskDelay(1);
+        }
+    }
+    out("usjprobe %d s: samples %u, not connected %u, falls %u\n", secs, samples, falses, edges);
+    return 0;
 }
 
 static int coredump_dump(void)
@@ -1300,8 +1366,14 @@ static int coredump_dump(void)
     }
     cd_copy_ctx_t c = {.deadline_us = esp_timer_get_time() + (int64_t)CD_COPY_MAX_MS * 1000};
     const gw_cdump_io_t io = {.ctx = &c, .read = cd_read, .write = cd_write};
+    s_cd_diag.writes = s_cd_diag.shorts = s_cd_diag.ferrs = s_cd_diag.notconn = 0;
+    s_cd_diag.waitfail = s_cd_diag.drvshort = 0;
     gw_cdump_copy_t rc = gw_cdump_copy(&io, st, size, w);   /* zeroes w */
     heap_caps_free(w);
+    out("cdstat mode %d writes %u short %u ferr %u notconn %u waitfail %u drvshort %u lbf %d nbf %d\n",
+        s_cd_diag.mode, s_cd_diag.writes, s_cd_diag.shorts, s_cd_diag.ferrs, s_cd_diag.notconn,
+        s_cd_diag.waitfail, s_cd_diag.drvshort, (stdout->_flags & __SLBF) != 0,
+        (stdout->_flags & __SNBF) != 0);
     if (rc == GW_CDUMP_COPY_STALLED) {
         ESP_LOGW(TAG, "coredump dump: the console did not read the output in time, the copy "
                       "stopped (#293)");
@@ -1339,6 +1411,11 @@ static esp_err_t coredump_summary(gw_cdump_info_t *out)
 static int cmd_coredump(int argc, char **argv)
 {
     if (argc == 2 && strcmp(argv[1], "dump") == 0) {
+        s_cd_diag.mode = 0;
+        return coredump_dump();
+    }
+    if (argc == 2 && strcmp(argv[1], "dumpraw") == 0) {   /* DIAG */
+        s_cd_diag.mode = 1;
         return coredump_dump();
     }
 #if CONFIG_GW_SHELL_WRITE_COMMANDS
@@ -2093,6 +2170,8 @@ esp_err_t gw_shell_start(const gw_shell_ctx_t *ctx)
         {.command = "crash", .help = "BOARD TEST BUILD ONLY (#129 M10): abort()", .func = cmd_crash},
         {.command = "stacks", .help = "BOARD TEST BUILD ONLY (#129 M4): stack high-water marks of "
          "the IDF and gateway tasks", .func = cmd_stacks_atomic},
+        {.command = "usjprobe", .help = "BOARD TEST BUILD ONLY (#293): sample the USB connection "
+         "state", .func = cmd_usjprobe},
         {.command = "gpio21", .help = "BOARD TEST BUILD ONLY (#287): the pad of the RS485 DE pin",
          .func = cmd_gpio21},
         {.command = "log", .help = "The log levels and the tags; '<tag|*> <level>' sets the level "
