@@ -24,6 +24,15 @@ CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
 CONFIG_COMPILER_OPTIMIZATION_SIZE=y
 CONFIG_FREERTOS_HZ=1000
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=6144
+# Issue #295: the stack of each IPC task (ipc0, ipc1), from the internal heap at the start. They
+# run the functions that esp_ipc_call() sends to a core. The deepest one on ipc0 is esp_intr_alloc():
+# gpio_isr_register() always sends it to the IPC task of the GPIO ISR core, also from that core
+# (gpio_install_isr_service() in gw_net, from app_main on core 0). ipc1 runs mainly
+# spi_flash_op_block_func() while core 0 writes the flash. Each stack also holds the coprocessor
+# save area of the S3 (FPU) and an interrupt frame. With the IDF default (1280), the first board
+# had less than the 512 B free that #129 requires for an IDF task; 2048 costs 1536 B of internal
+# RAM for the two cores.
+CONFIG_ESP_IPC_TASK_STACK_SIZE=2048
 
 # REL-1: task watchdog on the critical tasks (they subscribe themselves) and on the idle tasks
 CONFIG_ESP_TASK_WDT_EN=y

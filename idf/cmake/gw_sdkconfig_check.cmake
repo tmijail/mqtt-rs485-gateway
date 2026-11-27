@@ -50,6 +50,9 @@ set(GW_SDKCONFIG_REQUIRED
     BOOTLOADER_CUSTOM_RESERVE_RTC
     BOOTLOADER_FACTORY_RESET
     BOOTLOADER_SKIP_VALIDATE_IN_DEEP_SLEEP
+    # #295: the IPC tasks run esp_intr_alloc() (the GPIO ISR) and the flash operations of the
+    # other core; with the IDF default of 1280 B they had less than 512 B free on the board
+    ESP_IPC_TASK_STACK_SIZE
     # #18: the console (log and shell) on the USB-C connector of the board, the USB-Serial-JTAG
     # of the chip; a stale sdkconfig with the UART0 console has no shell on the USB (QEMU: UART0)
     ESP_CONSOLE_USB_SERIAL_JTAG

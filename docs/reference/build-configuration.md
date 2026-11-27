@@ -14,7 +14,7 @@ The build reads `sdkconfig.defaults`, then the overlays of `SDKCONFIG_DEFAULTS` 
 
 | File | Build | What it sets |
 |---|---|---|
-| `sdkconfig.defaults` | All builds. Alone, it is the build for the board | The board (16 MB QIO flash, 8 MB octal PSRAM, `partitions.csv`), the task watchdog (REL-1), the core dump to flash, the RS485 UART ISR in IRAM (MB-2), the network stack on core 0, TLS 1.2 and 1.3 with dynamic buffers (MQTT-4, #80), MQTT 5 (MQTT-8), HTTPS (#64), the OTA rollback (FW-1) and the microSD names without LFN (#122). No option burns an eFuse |
+| `sdkconfig.defaults` | All builds. Alone, it is the build for the board | The board (16 MB QIO flash, 8 MB octal PSRAM, `partitions.csv`), the task watchdog (REL-1), the core dump to flash, the RS485 UART ISR in IRAM (MB-2), the network stack on core 0, TLS 1.2 and 1.3 with dynamic buffers (MQTT-4, #80), MQTT 5 (MQTT-8), HTTPS (#64), the OTA rollback (FW-1), the microSD names without LFN (#122) and the stack of the IPC tasks (#295). No option burns an eFuse |
 | `sdkconfig.qemu` | All QEMU builds | `CONFIG_GW_IO_SIMULATED`, OpenCores Ethernet, no PSRAM, DIO flash, no Wi-Fi, no RS485 hardware half-duplex mode. Also the spill of store & forward to LittleFS, a publish budget of 2 s (#59), `CONFIG_GW_FW_PARK_OTHER_CORE` (#107) and a self-check of 30 s (#233) |
 | `sdkconfig.qemu-psram` | QEMU with PSRAM, after `sdkconfig.qemu` | The octal PSRAM, software SHA and AES (the QEMU GDMA does not reach PSRAM, #85), 10 RX buffers of OpenCores Ethernet (#110) and a store & forward ring of 1 000 samples (#124) |
 | `sdkconfig.qemu-secure` | The secure QEMU build, after `sdkconfig.qemu` and `sdkconfig.qemu-psram` | The NVS encryption with the HMAC key in KEY5 (`CONFIG_NVS_ENCRYPTION`) and the signed OTA images without Secure Boot (`CONFIG_SECURE_SIGNED_APPS_NO_SECURE_BOOT`). No build for the board has these two functions (#133, #261) |
@@ -114,6 +114,7 @@ Thus an old `sdkconfig` can keep old values. The project has no installed gatewa
 | `FATFS_LFN_NONE` | FatFs allocates no name buffer on each microSD file operation (#122, REL-2) |
 | `LWIP_SNTP_MAX_SERVERS` | The SNTP client gets all the servers of `ntp.servers` (#201) |
 | `GW_FW_SELFCHECK_S` | The QEMU build confirms a new image after 30 s (#233) |
+| `ESP_IPC_TASK_STACK_SIZE` | The stack of each IPC task (`ipc0`, `ipc1`) is 2 048 B, not the 1 280 B of ESP-IDF. Refer to [The stack of the IPC tasks](#the-stack-of-the-ipc-tasks) |
 | `BOOTLOADER_CUSTOM_RESERVE_RTC`, `BOOTLOADER_FACTORY_RESET`, `BOOTLOADER_SKIP_VALIDATE_IN_DEEP_SLEEP` | Off. The bootloader writes no RTC memory (#149). Refer to [The RTC memory of the bootloader](#the-rtc-memory-of-the-bootloader) |
 
 When the firmware starts to depend on a new option, add it to `GW_SDKCONFIG_REQUIRED`.
@@ -154,6 +155,20 @@ The bootloader reserves no RTC memory (`CONFIG_BOOTLOADER_CUSTOM_RESERVE_RTC` is
 - **A bootloader with the option cannot be removed with an OTA.** That bootloader writes a header into the area on each boot. Each later app must then keep the same size, or the bootloader writes over the data of the app. Only a USB flash replaces the bootloader. `BOOTLOADER_FACTORY_RESET` and `BOOTLOADER_SKIP_VALIDATE_IN_DEEP_SLEEP` also turn on this header.
 
 The three options are in `GW_SDKCONFIG_REQUIRED`. Thus a stale or changed `sdkconfig` that turns one of them on stops the configuration.
+
+## The stack of the IPC tasks
+
+ESP-IDF starts one IPC task on each core: `ipc0` and `ipc1`. An IPC task runs the functions that `esp_ipc_call()` and `esp_ipc_call_blocking()` send to its core. The build sets `CONFIG_ESP_IPC_TASK_STACK_SIZE` to 2 048 B (#295). The default of ESP-IDF is 1 280 B.
+
+These functions use the IPC tasks:
+
+- **`esp_intr_alloc()` on `ipc0`.** `gw_net` calls `gpio_install_isr_service()` from `app_main` on core 0. ESP-IDF then sends the allocation of the GPIO interrupt to the IPC task of that core, also from the same core. This is the deepest function on `ipc0`.
+- **`spi_flash_op_block_func()` on the two tasks.** When a core writes or erases the flash, the IPC task of the other core runs this function. The function holds that core in a wait loop until the flash operation ends. NVS, LittleFS and the OTA write cause it.
+- **`esp_intr_free()`.** It sends the release of an interrupt to the IPC task of the core of that interrupt.
+
+Each task stack on the ESP32-S3 also holds the save area of the coprocessors (the FPU), and the frame of an interrupt. With 1 280 B, the free stack of `ipc0` and `ipc1` on the first board was less than the 512 B that #129 requires for an IDF task.
+
+The two stacks come from the internal heap at the start. The change costs 1 536 B of internal RAM. The `stack` line of the shell command `status` does not give the IPC tasks. #129 measures them on the board.
 
 ## The size of the image
 
