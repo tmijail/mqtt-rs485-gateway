@@ -10,7 +10,7 @@ This document lists the routes of the REST API of the gateway, its authenticatio
 
 ## Authentication
 
-- All the routes require HTTP Basic with `web.username` and `web.password`, over HTTPS when `web.https` is on.
+- All the routes require HTTP Basic with `web.username` and `web.password`, over HTTPS when `web.https` is on. The HTTPS server accepts TLS 1.2 and TLS 1.3 (#291).
 - The only exceptions are the routes of the claim window: `GET /claim`, `GET /api/claim` and `POST /api/claim`. The captive portal on the HTTP port also needs no credential: it has no data and no write (#274).
 - While `web.password` is empty, the gateway accepts `admin` with its commissioning password.
 - The responses are JSON.

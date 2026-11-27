@@ -107,11 +107,35 @@ static void test_webstall(void)
     TEST_ASSERT_FALSE(gw_webstall_stuck(0xFFFFFFF0u, 5, false, 8000));
 }
 
+/* #291: a session in its TLS handshake holds the server: only it is shut down; without one,
+ * the session that holds the server is not known and all are shut down */
+static void test_webstall_pick(void)
+{
+    bool hs[4] = {false, true, false, false};
+    bool shut[4];
+    TEST_ASSERT_EQUAL_UINT(1, gw_webstall_pick(hs, 4, shut));
+    TEST_ASSERT_FALSE(shut[0]);
+    TEST_ASSERT_TRUE(shut[1]);
+    TEST_ASSERT_FALSE(shut[2]);
+    TEST_ASSERT_FALSE(shut[3]);
+
+    bool none[3] = {false, false, false};
+    TEST_ASSERT_EQUAL_UINT(3, gw_webstall_pick(none, 3, shut));
+    TEST_ASSERT_TRUE(shut[0] && shut[1] && shut[2]);
+
+    bool only[1] = {true};   /* the held session is the only one */
+    TEST_ASSERT_EQUAL_UINT(1, gw_webstall_pick(only, 1, shut));
+    TEST_ASSERT_TRUE(shut[0]);
+
+    TEST_ASSERT_EQUAL_UINT(0, gw_webstall_pick(none, 0, shut));   /* no session */
+}
+
 int main(void)
 {
     UNITY_BEGIN();
     RUN_TEST(test_block_and_backoff);
     RUN_TEST(test_addresses_and_table);
     RUN_TEST(test_webstall);
+    RUN_TEST(test_webstall_pick);
     return UNITY_END();
 }

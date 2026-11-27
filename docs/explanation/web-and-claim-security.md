@@ -55,6 +55,10 @@ Nobody examined the check in a real browser. The E2E sends the requests that a b
 
 **The stall watchdog (#110).** A slow client (slowloris) can send one header byte each 2 s. Each read waits up to 5 s, thus the server never releases that client. The task `web_guard` closes the sessions of a server that does not return to its loop in 8 s. It is a separate task with a low priority, not an `esp_timer` callback. The `esp_timer` task also samples the DIs at 1 kHz, and it must not block. In QEMU, the watchdog made the wait of a normal `GET` much shorter.
 
+**Only the session in the handshake (#291).** `esp_https_server` makes the TLS handshake of a new session in the task of the server. The session gets its TLS context only after the handshake. Thus a session without a TLS context is the session that holds the task, and the watchdog closes only that session. The sessions of the other clients stay open. After the handshake, the watchdog cannot find the session that holds the task, and it closes all the sessions.
+
+**TLS 1.2 and TLS 1.3 (#291).** The product owner decided that the web server accepts TLS 1.2 and TLS 1.3 (2026-11-27). mbedTLS reads each ClientHello in its TLS 1.3 code first. It gives a ClientHello without TLS 1.3 to its TLS 1.2 code, which reads the same record again. The dynamic TLS buffers of ESP-IDF v6.1 (`CONFIG_MBEDTLS_DYNAMIC_BUFFER`, #80) released that record before the TLS 1.2 code read it. The server then waited for a record that the client never sent, and the watchdog closed all the sessions. `gw_webtls.c` keeps the buffer while mbedTLS keeps the message in it. The dynamic buffers stay, because an idle TLS session then keeps no record buffers.
+
 **The bodies of rejected requests (#106).** After a response, `esp_http_server` reads and discards the remaining body in pieces of 32 B, in its single task. A large `POST` without credentials could keep the web busy for the full upload, again and again.
 
 - Some rejections are not trusted: no credentials were examined yet, or the request comes from another site. With a body of more than 1 KB, the server then stops the read and closes the session at once.

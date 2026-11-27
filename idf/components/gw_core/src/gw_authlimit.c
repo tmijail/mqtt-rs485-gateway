@@ -109,3 +109,15 @@ bool gw_webstall_stuck(uint32_t now_ms, uint32_t alive_ms, bool busy, uint32_t l
     int32_t idle = (int32_t)(now_ms - alive_ms);
     return !busy && idle > 0 && (uint32_t)idle > limit_ms;
 }
+
+size_t gw_webstall_pick(const bool *handshake, size_t n, bool *shut)
+{
+    size_t in_handshake = 0;
+    for (size_t k = 0; k < n; k++) {
+        in_handshake += handshake[k] ? 1u : 0u;
+    }
+    for (size_t k = 0; k < n; k++) {
+        shut[k] = in_handshake == 0 || handshake[k];
+    }
+    return in_handshake == 0 ? n : in_handshake;
+}

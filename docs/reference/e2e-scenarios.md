@@ -178,6 +178,7 @@ Node `GW22`.
 - **#100 CSRF:** each write without `X-Requested-With`, or from another origin, gets 403, also with a wrong password. The web UI still works.
 - **#106:** a refused 1.5 MB upload is cut early, and a `GET` on another session answers fast. An authenticated upload that is not an image is discarded completely.
 - **#110:** a slowloris client does not stop a `GET`, and the stack thresholds of `httpd`. `--web-stress N` adds N rounds of cut sessions, `PUT`s and uploads.
+- **#291:** a client with only TLS 1.2 gets its session (ECDHE-ECDSA), and a client with TLS 1.2 and 1.3 gets TLS 1.3. A TLS 1.2 client with only ECDHE-RSA suites gets its refusal before the watchdog. A client that stops in its TLS handshake does not close the keep-alive session of another client: the watchdog closes only the session in the handshake.
 - **#205:** the web certificate of the plant: `GET`, `dry_run`, load, restart, and `POST /api/web/certificate/new`.
 
 ## time

@@ -1420,11 +1420,22 @@ TLS_CONNECT_MAX_S = 15.0   # issue #116: a long caller timeout (an upload's cap)
 TLS_CONNECT_RETRIES = []   # (time, what) of each repeated handshake
 
 
-def tls_connect(timeout, what):
-    """Connected and TLS-wrapped socket to the gateway's HTTPS port (see TLS_CONNECT_TRIES)."""
+def tls_client_ctx(max_version=None, ciphers=None):
+    """A client context that does not verify the self-signed device certificate. @max_version
+    (ssl.TLSVersion) and @ciphers (OpenSSL names, TLS 1.2) limit what the ClientHello offers."""
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
+    if max_version is not None:
+        ctx.maximum_version = max_version
+    if ciphers is not None:
+        ctx.set_ciphers(ciphers)
+    return ctx
+
+
+def tls_connect(timeout, what, ctx=None):
+    """Connected and TLS-wrapped socket to the gateway's HTTPS port (see TLS_CONNECT_TRIES)."""
+    ctx = ctx or tls_client_ctx()
     end = time.monotonic() + timeout
     for attempt in range(TLS_CONNECT_TRIES):
         left = end - time.monotonic()
@@ -1450,9 +1461,10 @@ class _GatewayHTTPS(httplib.HTTPSConnection):
     """http.client over tls_connect()."""
 
     _what = "HTTPS session"
+    _ctx = None   # tls_client_ctx() by default
 
     def connect(self):
-        self.sock = tls_connect(self.timeout, f"{self._what}")
+        self.sock = tls_connect(self.timeout, f"{self._what}", self._ctx)
 
 
 def http(method, path, body=None, auth=("admin", WEB_PASSWORD), timeout=15, headers=None,
@@ -3557,6 +3569,7 @@ def run_https(args, work):
     check_csrf(gw, t0)
     check_refused_bodies(gw, t0)
     check_slow_client(gw, t0)
+    check_tls12(gw, t0)
     check_web_cert(gw, work, node)
     if args.web_stress:
         web_stress(gw, args.web_stress)
@@ -4040,6 +4053,122 @@ def check_slow_client(gw, since):
           f"GET {st} in {took:.1f} s; slow client: {out['sent']} B, connection {out['closed']}; "
           f"log {'yes' if held else 'no'}; {web.strip()}")
     check_web_stacks(stack, "after GW22 (TLS sessions, refused uploads, redirects, slow client)")
+
+
+def check_tls12(gw, since):
+    """Issue #291 (GW22): the HTTPS server accepts TLS 1.2 and TLS 1.3 (decision of the product
+    owner, 2026-11-27). On the board, a ClientHello without TLS 1.3 got no answer: mbedTLS keeps
+    that ClientHello for its TLS 1.2 code, but the dynamic buffers of ESP-IDF (esp_ssl_srv.c)
+    freed it first, and the server waited for a record that never came, until the stall watchdog
+    shut down all the sessions of the server. Here, after check_slow_client (1 stall):
+      1. a client that offers only TLS 1.2 gets its session at once (ECDHE-ECDSA: the device
+         certificate is P-256) and GET /api/status gives 200 over it; a client that offers both
+         versions still gets TLS 1.3;
+      2. a TLS 1.2 client whose cipher suites do not agree with the certificate (ECDHE-RSA only)
+         gets its refusal (an alert or the close) before the watchdog, not silence;
+      3. a client that stops in its TLS handshake (half a ClientHello) holds the server until the
+         watchdog, which then shuts down only that session: a keep-alive session of another
+         client stays open, and its request made meanwhile is answered on the same connection.
+    The shell then counts 2 stalls: the TLS 1.2 clients caused none."""
+    auth = {"Authorization": "Basic " + base64.b64encode(f"admin:{WEB_PASSWORD}".encode()).decode()}
+
+    def get_over(ctx, what, timeout=20):
+        t = time.monotonic()
+        c = _GatewayHTTPS("127.0.0.1", HTTPS_PORT, timeout=timeout)
+        c._what, c._ctx = what, ctx
+        try:
+            c.request("GET", "/api/status", headers=auth)
+            r = c.getresponse()
+            r.read()
+            return r.status, c.sock.version(), c.sock.cipher()[0], time.monotonic() - t
+        except (OSError, httplib.HTTPException, ssl.SSLError) as e:
+            return None, f"{type(e).__name__}: {e}", "", time.monotonic() - t
+        finally:
+            c.close()
+
+    v12 = get_over(tls_client_ctx(ssl.TLSVersion.TLSv1_2), "#291 TLS 1.2 only")
+    both = get_over(tls_client_ctx(), "#291 TLS 1.2 and 1.3")
+    check("Issue #291 a client that offers only TLS 1.2 gets its session (ECDHE-ECDSA) and GET "
+          "/api/status answers 200 over it; a client that offers TLS 1.2 and 1.3 gets TLS 1.3",
+          v12[0] == 200 and v12[1] == "TLSv1.2" and "ECDSA" in v12[2]
+          and both[0] == 200 and both[1] == "TLSv1.3",
+          f"TLS 1.2 only: {v12[0]} {v12[1]} {v12[2]} in {v12[3]:.1f} s; TLS 1.2 and 1.3: "
+          f"{both[0]} {both[1]} {both[2]} in {both[3]:.1f} s; handshakes made again "
+          f"{len(TLS_CONNECT_RETRIES)}")
+
+    t = time.monotonic()
+    raw = socket.create_connection(("127.0.0.1", HTTPS_PORT), timeout=STALL_S + 10)
+    try:
+        sock = tls_client_ctx(ssl.TLSVersion.TLSv1_2, "ECDHE-RSA-AES128-GCM-SHA256").wrap_socket(raw)
+        refused = f"handshake done ({sock.version()} {sock.cipher()[0]})"
+        sock.close()
+    except (ssl.SSLError, ConnectionError) as e:
+        refused = f"{type(e).__name__}: {e}"
+    except OSError as e:   # a timeout: no answer
+        refused = f"no answer: {type(e).__name__}"
+    finally:
+        raw.close()
+    took = time.monotonic() - t
+    check(f"Issue #291 a TLS 1.2 client with only ECDHE-RSA suites gets its refusal (an alert or "
+          f"the close) before the stall watchdog ({STALL_S} s)",
+          took < STALL_S and not refused.startswith(("handshake done", "no answer")),
+          f"{refused} after {took:.1f} s")
+
+    b = _GatewayHTTPS("127.0.0.1", HTTPS_PORT, timeout=STALL_S + 12)
+    b._what = "#291 keep-alive session"
+    a = None
+    st_b0 = st_b1 = None
+    same, a_end, took_b = False, "open", 0.0
+    try:
+        b.request("GET", "/api/status", headers=auth)
+        r = b.getresponse()
+        r.read()
+        st_b0, sock_b = r.status, b.sock
+        inc, out = ssl.MemoryBIO(), ssl.MemoryBIO()
+        hs = tls_client_ctx().wrap_bio(inc, out)
+        try:
+            hs.do_handshake()
+        except ssl.SSLWantReadError:
+            pass
+        hello = out.read()
+        a = socket.create_connection(("127.0.0.1", HTTPS_PORT), timeout=STALL_S + 12)
+        ta = time.monotonic()
+        a.sendall(hello[: len(hello) // 2])
+        time.sleep(1.5)
+        t = time.monotonic()
+        b.request("GET", "/api/status", headers=auth)
+        r = b.getresponse()
+        r.read()
+        st_b1, took_b, same = r.status, time.monotonic() - t, b.sock is sock_b
+        try:
+            a_end = "EOF" if a.recv(1) == b"" else "data"
+        except ConnectionError as e:
+            a_end = type(e).__name__
+        except OSError as e:
+            a_end = f"open ({type(e).__name__})"
+        a_end += f" after {time.monotonic() - ta:.1f} s"
+    except (OSError, httplib.HTTPException, ssl.SSLError) as e:
+        st_b1 = f"{type(e).__name__}: {e}"
+    finally:
+        b.close()
+        if a is not None:
+            a.close()
+    held = gw.wait_log(r"HTTPS server held for more than \d+ s by a TLS handshake that does not "
+                       r"end .*: 1 session\(s\) in the handshake shut down, the other sessions "
+                       r"stay", 3, since)
+    asked, _ = gw.shell("status", [r"^web\s+HTTPS .*, stalls 2$"])
+    web = (gw.find(r"^web\s", asked) or [""])[-1]
+    check(f"Issue #291 a client that stops in its TLS handshake (half a ClientHello) does not stop "
+          f"the session of another client: the stall watchdog ({STALL_S} s) shuts down only the "
+          f"session in the handshake, and the keep-alive session answers on the same connection; "
+          f"the shell counts 2 stalls (the TLS 1.2 clients caused none)",
+          st_b0 == 200 and st_b1 == 200 and same and took_b <= STALL_S + 4
+          and a_end.startswith(("EOF", "Connection")) and held is not None
+          and re.search(r"stalls 2$", web.strip()) is not None,
+          f"keep-alive session: {st_b0}, then {st_b1} in {took_b:.1f} s on the "
+          f"{'same' if same else 'a new'} connection; stalled client: {a_end}; log "
+          f"{'yes' if held else 'no'}; {web.strip()}")
+
 
 def web_stress(gw, rounds):
     """Issue #110, item 2: once, in QEMU with PSRAM, the third accepted PUT of check_csrf never

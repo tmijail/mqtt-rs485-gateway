@@ -170,14 +170,17 @@ static void peer_addr(httpd_req_t *req, uint8_t out[16], char *text, size_t cap)
  * every piece that arrives. If a server has not been seen alive for CONFIG_GW_WEB_STALL_S
  * outside a handler (gw_webstall_stuck), the watchdog shuts its sessions down: the blocked
  * receive returns and httpd closes the session. Idle keep-alive sessions of the same server go
- * too: browsers reconnect. This shortens a slowloris hold to about CONFIG_GW_WEB_STALL_S; it
- * does not prevent one (docs/reference/commissioning-and-secrets.md#the-limits-of-the-web-server).
+ * too: browsers reconnect. Issue #291: a session in its TLS handshake (no TLS context yet) is
+ * the one that holds the task, and then only it goes (gw_webstall_pick). This shortens a
+ * slowloris hold to about CONFIG_GW_WEB_STALL_S; it does not prevent one
+ * (docs/reference/commissioning-and-secrets.md#the-limits-of-the-web-server).
  * The ping also records each server's task, so the shell can tell the two "httpd" tasks apart.
  */
 typedef struct {
     httpd_handle_t server;
     const char *name;
     uint16_t port;                     /* its listening port: a session socket's local port */
+    bool tls;                          /* HTTPS: a session has a TLS context after its handshake */
     TaskHandle_t task;                 /* the server's task, from its first ping */
     atomic_uint alive_ms;              /* last time the task was seen making progress */
     atomic_bool in_handler;            /* in one of our handlers (not draining) */
@@ -263,19 +266,29 @@ static void guard_ping(void *arg)   /* runs in the server's task, from its loop 
 /* Shut down the sessions of a held server. Its task is blocked on one session, so its table
  * does not change meanwhile; still, httpd_get_client_list reads it from this task, and a
  * socket number could have been reused by another component (MQTT, Modbus TCP) in between:
- * only sockets whose local port is this server's are touched. */
-static unsigned guard_shut(web_guard_t *g)
+ * only sockets whose local port is this server's are touched. Issue #291: esp_https_server
+ * makes the TLS handshake of a new session in the accept, and gives the session its TLS context
+ * only after it. A session without one is in its handshake and holds the task: only it is shut
+ * down (*handshake true), and the sessions of the other clients stay. */
+static unsigned guard_shut(web_guard_t *g, bool *handshake)
 {
     int fds[4];
+    bool hs[4], pick[4];
     size_t n = sizeof(fds) / sizeof(fds[0]);
     unsigned shut = 0;
+    *handshake = false;
     if (httpd_get_client_list(g->server, &n, fds) != ESP_OK) {
         return 0;
     }
     for (size_t k = 0; k < n; k++) {
+        hs[k] = g->tls && httpd_sess_get_transport_ctx(g->server, fds[k]) == NULL;
+        *handshake = *handshake || hs[k];
+    }
+    gw_webstall_pick(hs, n, pick);
+    for (size_t k = 0; k < n; k++) {
         struct sockaddr_storage a;
         socklen_t len = sizeof(a);
-        if (getsockname(fds[k], (struct sockaddr *)&a, &len) != 0) {
+        if (!pick[k] || getsockname(fds[k], (struct sockaddr *)&a, &len) != 0) {
             continue;
         }
         uint16_t port = a.ss_family == AF_INET ? ntohs(((struct sockaddr_in *)&a)->sin_port)
@@ -306,21 +319,30 @@ static void guard_task(void *arg)
                                    CONFIG_GW_WEB_STALL_S * 1000u)) {
                 continue;
             }
-            unsigned shut = guard_shut(g);
+            bool handshake;
+            unsigned shut = guard_shut(g, &handshake);
             atomic_fetch_add(&g->stalls, 1u);
             atomic_store(&g->alive_ms, now);   /* next look in another CONFIG_GW_WEB_STALL_S */
-            ESP_LOGW(TAG, "%s server held for more than %d s by a request that does not arrive "
-                          "(slow or stalled client): %u session(s) shut down",
-                     g->name, CONFIG_GW_WEB_STALL_S, shut);
+            if (handshake) {
+                ESP_LOGW(TAG, "%s server held for more than %d s by a TLS handshake that does not "
+                              "end (slow or stalled client): %u session(s) in the handshake shut "
+                              "down, the other sessions stay",
+                         g->name, CONFIG_GW_WEB_STALL_S, shut);
+            } else {
+                ESP_LOGW(TAG, "%s server held for more than %d s by a request that does not "
+                              "arrive (slow or stalled client): %u session(s) shut down",
+                         g->name, CONFIG_GW_WEB_STALL_S, shut);
+            }
         }
     }
 }
 
-static void guard_add(int i, httpd_handle_t server, const char *name, uint16_t port)
+static void guard_add(int i, httpd_handle_t server, const char *name, uint16_t port, bool tls)
 {
     web_guard_t *g = &s_guard[i];
     g->name = name;
     g->port = port;
+    g->tls = tls;
     atomic_store(&g->alive_ms, now_ms32());
     g->server = server;
 }
@@ -3082,7 +3104,7 @@ static esp_err_t start_redirect(uint16_t port)
     hc.max_uri_handlers = 4;
     hc.uri_match_fn = httpd_uri_match_wildcard;
     ESP_RETURN_ON_ERROR(httpd_start(&s_redirect, &hc), TAG, "redirect server");
-    guard_add(1, s_redirect, "HTTP redirect", port);
+    guard_add(1, s_redirect, "HTTP redirect", port, false);
     static const handler_t redirect = {redirect_any};
     static const httpd_method_t methods[] = {HTTP_GET, HTTP_PUT, HTTP_POST, HTTP_DELETE};
     for (size_t i = 0; i < sizeof(methods) / sizeof(methods[0]); i++) {
@@ -3204,7 +3226,7 @@ esp_err_t gw_web_start(const gw_web_ctx_t *ctx)
     }
 
     guard_add(0, s_server, s_https ? "HTTPS" : "HTTP",
-              s_https ? ctx->cfg->web.https_port : ctx->cfg->web.port);
+              s_https ? ctx->cfg->web.https_port : ctx->cfg->web.port, s_https);
     static const handler_t h_index = {index_get}, h_favicon = {favicon_get},
                            h_status = {status_get}, h_config_get = {config_get},
                            h_config_put = {config_put}, h_restart = {restart_post},
