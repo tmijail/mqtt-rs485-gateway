@@ -87,7 +87,7 @@ The web UI, `POST /api/factory-reset?confirm=1` and the shell command `factory-r
 
 During the boot, the gateway gives no beep at 2 s and ignores a release between 2 and 10 s. The factory reset operates also during the boot.
 
-The gateway has no time limit for a push. After 10 s, the factory reset starts at the release, also after a push of some minutes. To stop a factory reset after the 2 beeps, disconnect the power while you hold the button. Then release the button, and connect the power again.
+The gateway has no time limit for a push. After 10 s, the factory reset starts at the release, also after a push of some minutes. To stop a factory reset after the 2 beeps, remove all the power (USB, PoE and the terminal block) while you hold the button. Then release the button, and connect the power again.
 
 A button that stays down, for example a defective button, gives the 2 beeps at 10 s, then nothing more. The gateway continues its work, and the LED stays white. The factory reset starts only when the button comes up.
 

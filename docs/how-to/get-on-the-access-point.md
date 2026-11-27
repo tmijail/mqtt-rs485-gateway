@@ -24,6 +24,8 @@ When nobody knows the web password, refer to [If nobody knows the web password](
 2. At 2 s, the gateway gives 1 beep and the LED blinks white. Release the button before 10 s.
 
    If you hear no beep at 2 s, the gateway did not complete its boot. Release the button, wait, then do step 1 again.
+
+   If you hear 2 beeps (at 10 s), a release does a factory reset. To stop the factory reset, remove all the power (USB, PoE and the terminal block) before you release the button.
 3. Make sure that you hear 1 more beep when you release the button.
 4. Make sure that the LED shows a short cyan flash each 2 s. This shows that the access point is on, with WPA2.
 5. On the phone, connect to the Wi-Fi network `GW-Setup-XXXXXX` in 5 min or less. Use the web password as the Wi-Fi password. `XXXXXX` is the end of the MAC address of the board.

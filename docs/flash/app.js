@@ -652,7 +652,7 @@ ${check("no", "Gateway answer", texts[1])}
 ${S.webOpened ? `<p><b>The web UI opened in a new tab.</b> This panel stays here: compare the fingerprint, then log in.</p>` : ""}
 <ol>${steps.map((s) => `<li>${esc(s)}</li>`).join("")}</ol>`;
         }
-        const ap = st === "noaddr" ? `<p>Use the access point: push BOOT for 2 to 10 s. Release it before 10 s: a push of 10 s does a factory reset. <a href="${doc("how-to/get-on-the-access-point/")}">Get on the access point</a></p>` : "";
+        const ap = st === "noaddr" ? `<p>Use the access point: push BOOT until you hear 1 beep (at 2 s), then release it. Release it before 10 s: a release after the 2 beeps at 10 s does a factory reset. <a href="${doc("how-to/get-on-the-access-point/")}">Get on the access point</a></p>` : "";
         return `<div class="gwf-head"><h3>${esc(heading)}</h3><p class="gwf-mut">${esc(sub)}</p></div>${notices()}
 <div class="gwf-cols"><div class="gwf-col1">${accessBox(d)}${firmwareBox(d)}</div>
 <div class="gwf-box gwf-col1">${rec}<hr><b class="gwf-mut">Other actions</b>${ap}
@@ -797,7 +797,7 @@ ${relPart}${notes.join("")}</div>
         }
         if (f.stage === "connect") {
             return `<div class="gwf-box"><h3>The flash did not start</h3><p>Nothing was erased. Put the board in the download mode by hand:</p>
-${warn("Do not hold BOOT while the gateway has power.", "A push of 2 to 10 s opens the access point. A push of 10 s does a factory reset.")}
+${warn("Do not hold BOOT while the gateway has power.", "A push of 2 to 10 s opens the access point. A push of more than 10 s does a factory reset at the release.")}
 <ol><li>Remove all the power: the USB cable, PoE and the terminal block.</li><li>Hold the BOOT button.</li><li>Connect the USB cable. Then release BOOT.</li><li>Click <b>Try the flash again</b>.</li></ol>${detail}
 <div class="gwf-row gwf-wrap"><button type="button" class="gwf-btn gwf-pri" data-act="flash">Try the flash again</button>
 <button type="button" class="gwf-btn" data-act="other">Select another port</button><a href="#gw-flash" data-act="tab" data-arg="files">Download the image files</a></div></div>`;

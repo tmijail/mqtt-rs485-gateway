@@ -1528,8 +1528,9 @@ static int cmd_restart(int argc, char **argv)
 
 #define ERASE_IDLE_MS 60000   /* the answer to 'factory-reset' must come in this time */
 
-/* #203: 'factory-reset' asks for the word ERASE, then erases what BOOT held 10 s erases and
- * restarts in commissioning. The answer is read WITHOUT s_ctx_lock (as 'config load', issue #78). */
+/* #203: 'factory-reset' asks for the word ERASE, then erases what BOOT erases (released
+ * after 10 s, #292) and restarts in commissioning. The answer is read WITHOUT s_ctx_lock (as
+ * 'config load', issue #78). */
 static int cmd_factory_reset(int argc, char **argv)
 {
     (void)argv;

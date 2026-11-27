@@ -1139,8 +1139,9 @@ static esp_err_t restart_post(httpd_req_t *req)
 /* ---------- #203: POST /api/factory-reset?confirm=1 ---------- */
 
 /* The same checks as every write (CSRF, then the password); the request must say ?confirm=1 (the
- * web UI asks the operator to type ERASE first). The erase is the one of BOOT held 10 s: the
- * answer comes after it, and the gateway restarts in commissioning 0.5 s later. */
+ * web UI asks the operator to type ERASE first). The erase is the one of BOOT released after
+ * 10 s (#292): the answer comes after it, and the gateway restarts in commissioning 0.5 s
+ * later. */
 static esp_err_t factory_reset_post(httpd_req_t *req)
 {
     if (!same_origin(req) || !authorized(req)) {

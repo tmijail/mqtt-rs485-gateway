@@ -410,7 +410,7 @@ Body: `{"password": "…"}`, with the rule of `web.password`: 8 to 63 printable 
 
 ### `POST /api/factory-reset`
 
-The factory reset erases the same data as the BOOT button held for 10 s:
+The factory reset erases the same data as the BOOT button held for 10 s and then released:
 
 - the configuration;
 - the secrets, for example the MQTT password;

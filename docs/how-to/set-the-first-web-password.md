@@ -25,7 +25,7 @@ The window opens only when no web password is set. This is the case on a new gat
 | Signal | What it tells |
 |---|---|
 | 1 beep at 2 s of the push, and the LED white, blinks fast | Release the button now for the access point and the window |
-| 2 beeps at 10 s of the push, and the LED white, continuous | Do not release the button if you do not want a factory reset. A release now does a factory reset |
+| 2 beeps at 10 s of the push, and the LED white, continuous | A release now does a factory reset. To stop the factory reset, remove all the power (USB, PoE and the terminal block) before you release the button. Refer to [The BOOT button](../reference/status-signals.md#boot-button) |
 | 1 beep when you release the button | The access point starts, and the claim window opens |
 | No beep at 2 s, and no beep when you release the button | The gateway did not complete its boot, and it ignored the push. Wait, then push again |
 | LED blue and white, alternately | The claim window is open. The access point has no key |

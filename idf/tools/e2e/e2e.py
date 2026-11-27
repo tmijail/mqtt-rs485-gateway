@@ -10326,7 +10326,7 @@ def check_restart_admin(args, work, flash):
     takes the commissioning password of the console), in one more boot: the restart into safe mode
     (POST /api/restart?safe=1), its status and its end at a restart; then the shell
     'factory-reset' with a wrong word (nothing erased) and POST /api/factory-reset?confirm=1 (the
-    erase of BOOT held 10 s, then commissioning)."""
+    erase of BOOT released after 10 s, then commissioning)."""
     node = "GW08"
     obs = Observer()
     gw = Gateway(args, work / "uart0-reset-admin.log", flash)
