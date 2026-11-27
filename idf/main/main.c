@@ -161,7 +161,7 @@ static void restart_soon(void)
 }
 
 /* #203: the restart after a factory reset from the web UI, the REST API or the shell: the same
- * as after BOOT held 10 s (orderly NDEATH when a session is up; #136: the RAM ring is not kept) */
+ * as after BOOT released after 10 s (orderly NDEATH when a session is up; #136: the RAM ring is not kept) */
 static void factory_restart(void *arg)
 {
     (void)arg;
@@ -348,9 +348,20 @@ static esp_err_t start_ap(uint32_t max_s, uint32_t open_s)
 #define AP_MAX_NORMAL_S 0u
 #endif
 
-/* CFG-5 / NET-5: BOOT gestures, in every mode. */
+/* CFG-5 / NET-5: BOOT gestures, in every mode. Issue #292: the marks at 2 s and at 10 s come
+ * while the button is held; the action comes at the release. The factory reset is accepted at any
+ * time (gw_bootbtn gives its 2 beeps at 10 s); the access point only after the boot (#187). */
 static void on_button(gw_btn_event_t ev)
 {
+    if (ev == GW_BTN_MARK_AP) {
+        if (!s_ready) {
+            /* issue #187: no beep, so the operator knows that a release now does nothing */
+            ESP_LOGW(TAG, "BOOT held 2 s, no beep: still starting, a release now does nothing");
+            return;
+        }
+        gw_buzzer_beep(1);   /* IO-6, issue #292: a release now starts the access point */
+        return;
+    }
     if (ev == GW_BTN_FACTORY_RESET) {
         gw_storage_factory_reset();
         /* orderly when a session is up (NDEATH): the device leaves the Sparkplug namespace */

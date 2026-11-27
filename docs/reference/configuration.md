@@ -883,7 +883,7 @@ Each item is 0 (a normal DO) or 50 to 60000 ms (a pulse DO). Use a pulse DO for 
 - At the boot, the gateway restores the counters from the last save.
 - An orderly restart saves them first: NCMD Reboot, a new configuration, the `restart` of the shell or of the web UI.
 - A power cut, a panic or the watchdog loses the count since the last save.
-- An NCMD cannot write the counters. The factory reset sets them to 0: BOOT held for 10 s, the web UI, `POST /api/factory-reset` or the shell `factory-reset`.
+- An NCMD cannot write the counters. The factory reset sets them to 0: BOOT held for 10 s and released, the web UI, `POST /api/factory-reset` or the shell `factory-reset`.
 
 ### Fast counters
 

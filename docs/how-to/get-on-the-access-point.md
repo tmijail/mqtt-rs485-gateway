@@ -20,11 +20,14 @@ When nobody knows the web password, refer to [If nobody knows the web password](
 
 ## Procedure
 
-1. Push the BOOT button for 2 to 10 s. Release it when the LED blinks white.
-2. Make sure that you hear 1 beep. If you hear no beep, the gateway did not complete its boot: wait, then do step 1 again.
-3. Make sure that the LED shows a short cyan flash each 2 s. This shows that the access point is on, with WPA2.
-4. On the phone, connect to the Wi-Fi network `GW-Setup-XXXXXX` in 5 min or less. Use the web password as the Wi-Fi password. `XXXXXX` is the end of the MAC address of the board.
-5. Open the web UI in the browser:
+1. Push the BOOT button, and hold it.
+2. At 2 s, the gateway gives 1 beep and the LED blinks white. Release the button before 10 s.
+
+   If you hear no beep at 2 s, the gateway did not complete its boot. Release the button, wait, then do step 1 again.
+3. Make sure that you hear 1 more beep when you release the button.
+4. Make sure that the LED shows a short cyan flash each 2 s. This shows that the access point is on, with WPA2.
+5. On the phone, connect to the Wi-Fi network `GW-Setup-XXXXXX` in 5 min or less. Use the web password as the Wi-Fi password. `XXXXXX` is the end of the MAC address of the board.
+6. Open the web UI in the browser:
    1. If the phone opens its captive portal window with the guide page of the gateway, click "Open in the browser".
    2. If the guide page shows "The address is in the clipboard", close the window. On iOS, tap "Cancel", then "Use Without Internet". Open the browser, and paste the address.
    3. If no window opens in 10 s, open `https://192.168.4.1/` in the browser.
@@ -32,8 +35,8 @@ When nobody knows the web password, refer to [If nobody knows the web password](
    5. Type the web user name and the web password in the login dialog of the browser.
 
    The guide page has no field for a password. For the guide page, refer to [The captive portal](../reference/access-point.md#the-captive-portal).
-6. Do the work in the web UI.
-7. When you complete the work, close the access point:
+7. Do the work in the web UI.
+8. When you complete the work, close the access point:
    1. On the Status tab, find the card "Access point".
 
       ![The card 'Access point' of the Status tab on a phone: the access point GW-Setup is on, its Wi-Fi password is the web password, it has 1 client, and it stops in 28 min. Below is the button 'Close the access point'.](../images/ap-card-phone.png)
@@ -45,13 +48,13 @@ When nobody knows the web password, refer to [If nobody knows the web password](
 
    4. Click the red button "Close the access point". To keep the access point on, click "Cancel".
    5. Wait until the phone loses the connection. The access point stops approximately 2 s after the click.
-8. Make sure that the LED shows no cyan flash.
+9. Make sure that the LED shows no cyan flash.
 
-After step 7, a new visit to the Status tab (for example from the plant network) shows that the access point is off:
+After step 8, a new visit to the Status tab (for example from the plant network) shows that the access point is off:
 
 ![The card 'Access point' after the button 'Close the access point': the access point is off (closed on request). To start it, push the BOOT button of the gateway for 2 to 10 s.](../images/ap-card-closed-phone.png)
 
-The access point also stops without step 7:
+The access point also stops without step 8:
 
 - 5 min after the last client disconnects (`CONFIG_GW_SOFTAP_IDLE_MIN`).
 - In normal mode, 30 min after the push of BOOT (`CONFIG_GW_SOFTAP_TIMEOUT_MIN`), also with a client.

@@ -145,6 +145,10 @@ static rgb_t pattern(uint32_t f, uint32_t tick, const char **name)
         *name = "factory reset";
         return WHITE;
     }
+    if (f & GW_ST_BUTTON_RESET) {
+        *name = "BOOT held 10 s";   /* issue #292: the release starts the factory reset */
+        return WHITE;
+    }
     if (f & GW_ST_BUTTON) {
         *name = "BOOT held";
         return (tick & 1) ? OFF : WHITE;

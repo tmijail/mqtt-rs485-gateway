@@ -210,7 +210,7 @@ The `device_id` is the device name, or `<device_prefix>:<name>` with `sparkplug.
 | CFG-2 | A default configuration in the firmware. A file in an internal file system (LittleFS) replaces it | P0 | ✅ | Done |
 | CFG-3 | A **web UI** (HTTPS) with a user name and a password. You can edit the network, MQTT, Sparkplug, RS485 and the devices and tags, and see the live state | P1 | | Done |
 | CFG-4 | A JSON REST API to read and write the configuration, with import and export | P1 | | Done |
-| CFG-5 | A factory reset when you push the BOOT button for more than 10 s | P1 | | Done |
+| CFG-5 | A factory reset when you push the BOOT button for more than 10 s. It starts at the release of the button (issue #292) | P1 | | Done |
 | CFG-6 | A serial console (shell) with commands for the state, the configuration and diagnostics | P1 | | Done |
 | CFG-7 | The gateway keeps the secrets (passwords, TLS keys) out of the configuration document, in NVS. **Out of scope:** the encryption of the secrets with a key in eFuse on the board. The key in eFuse is permanent, and the owner of the board must keep full control of the board (#133). Only the secure QEMU build (`sdkconfig.qemu-secure`) encrypts NVS, with emulated eFuses. Issue #133 decided that this stays there, for the optional owner profile of #255. The branch `archive/efuse-production` keeps the archived feature | P1 | | Done. The eFuse part is out of scope |
 | CFG-8 | **First web access without the serial console** (issue #120): the claim window. While `web.password` is empty, a push of BOOT for 2 to 10 s opens a claim window for 10 min (Kconfig `GW_WEB_CLAIM_WINDOW_MIN`). During the window, a client of the access point (NET-5) can set the first web password without a credential (`POST /api/claim`, §6.1). Clients of other interfaces get `403`. The window closes at the end of its time, after the first password, when the access point stops, and at a restart. When a web password is set, the window does not open again. Only a factory reset (CFG-5) removes the password. Issue #187: 5 s after the claim, the access point changes from open to WPA2, with the new web password as its key | P1 | | Done |
@@ -788,9 +788,10 @@ Without these keys, the build option applies (`CONFIG_GW_MB_BLOCK_READS`, `CONFI
 - **Patterns:** one beep is 150 ms of tone and 150 ms of silence. Each alarm sounds its burst each 10 s while its condition continues: `device_offline` 1 beep, `mqtt_down` 2 beeps, `config_error` 3 beeps. If there are a number of alarms, the alarm with the most beeps sounds.
 - **`config_error`:** a rejected configuration cannot enable an alarm. Thus the alarms of the last valid configuration apply (saved in NVS). After a factory reset, it does not sound.
 - **BOOT button.** These beeps sound with or without alarms:
-  - 1 beep when you release the button after 2 to 10 s (access point, NET-5; claim window, CFG-8). During the boot, the gateway ignores the push and gives no beep: push the button again when the boot is complete (issue #187);
+  - 1 beep at 2 s while you hold the button, and 1 beep when you release it after 2 to 10 s (access point, NET-5; claim window, CFG-8; issue #292). During the boot, the gateway ignores the push and gives no beep: push the button again when the boot is complete (issue #187);
   - 1 beep when the claim window sets the web password;
-  - 2 beeps when the factory reset starts (CFG-5).
+  - 2 beeps at 10 s while you hold the button, as a warning (issue #292);
+  - 2 beeps when the factory reset starts (CFG-5): at the release of the button after 10 s, or on request from the web UI, the REST API or the shell.
 - You cannot stop an alarm while its condition continues.
 - **`mqtt_down` and the clock:** while the gateway waits for a valid clock (TIME-1, issue #160), there is no Sparkplug session. Thus `mqtt_down` also sounds then, if it is enabled. The operator must set the time or make SNTP available.
 
@@ -798,8 +799,8 @@ Without these keys, the build option applies (`CONFIG_GW_MB_BLOCK_READS`, `CONFI
 
 | State | Pattern |
 |---|---|
-| Factory reset in progress | White, continuous |
-| BOOT pushed for more than 2 s | White, blinks at 4 Hz |
+| Factory reset in progress, or BOOT held for more than 10 s (issue #292) | White, continuous |
+| BOOT held for 2 to 10 s | White, blinks at 4 Hz |
 | Claim window open (CFG-8), or access point open (no key; NET-5, issue #187) | Blue and white, alternately (each color 250 ms) |
 | Commissioning (no configuration after a reset) | Blue, blinks at 1 Hz |
 | Safe mode (on request or after 3 crashes, issue #209) | Blue and amber, alternately (1 Hz) |

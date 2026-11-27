@@ -5228,7 +5228,12 @@ def run_ota_wiring(args, work):
         gw.shell("status", [r"^config\s"])   # the shell is up: 'boot 1' is not lost
         pressed = time.monotonic()
         gw.console("boot 1")
-        fired = gw.wait_log(r"button: BOOT held 10 s: factory reset", 15, pressed)
+        # issue #292: the 10 s mark is a warning; the factory reset starts at the release
+        mark = gw.wait_log(r"button: BOOT held 10 s: release it now for a factory reset", 15,
+                           pressed)
+        gw.console("boot 0")
+        fired = gw.wait_log(r"button: BOOT released after \d+ ms: factory reset", 5,
+                            mark or pressed) if mark else None
         comm = gw.wait_log(r"main: commissioning: no configuration since the factory reset", 40,
                            pressed)
         pw = commissioning_password(gw, pressed, 30)
@@ -9878,12 +9883,34 @@ def run_factory_reset(args, work):
     # the shell starts after MQTT and the web server (HTTPS: the certificate is generated at the
     # first boot): a 'boot 1' typed before the prompt is lost
     gw.shell("status", [r"^config\s"])
-    # short press (3 s): the commissioning access point gesture, no reset
+    # short press (3 s): the commissioning access point gesture, no reset. Issue #292: the mark
+    # at 2 s (log, LED and 1 beep) comes while the button is still held, and 1 more beep at the
+    # release (#187: the handler accepted the gesture)
     t_short = time.monotonic()
     gw.console("boot 1")
-    time.sleep(3)
+    mark_ap = gw.wait_log(r"button: BOOT held 2 s: release it now for the access point; hold it "
+                          r"to 10 s for a factory reset", 5, t_short)
+    # the release waits for the evidence of the mark (a slow emulator), but never past 8 s
+
+    def before_8_s():
+        return max(0.0, min(2.0, t_short + 8 - time.monotonic()))
+
+    led_ap = gw.wait_log(r"led: status: BOOT held$", before_8_s(), mark_ap or t_short)
+    beep_held = gw.wait_log(r"buzzer: 1 beep\(s\) \(simulated\)", before_8_s(),
+                            mark_ap or t_short)
+    time.sleep(max(0.0, t_short + 3 - time.monotonic()))
+    t_up = time.monotonic()
     gw.console("boot 0")
     ap = gw.wait_log(r"button: BOOT pressed \d+ ms: commissioning access point", 3, t_short)
+    beep_up = gw.wait_log(r"buzzer: 1 beep\(s\) \(simulated\)", 3, t_up)
+    check("Issue #292 (IO-6, NET-5) BOOT held 2 s: the log, the LED 'BOOT held' and 1 beep while "
+          "the button is still down; the release gives the access point and 1 more beep",
+          mark_ap and led_ap and beep_held and mark_ap - t_short >= 1.5 and beep_held < t_up
+          and ap and ap >= t_up and beep_up,
+          f"mark {(mark_ap - t_short) if mark_ap else -1:.1f} s after the push, LED {bool(led_ap)}, "
+          f"beep {(beep_held - t_short) if beep_held else -1:.1f} s; release at "
+          f"{t_up - t_short:.1f} s: access point {(ap - t_short) if ap else -1:.1f} s, beep "
+          f"{(beep_up - t_short) if beep_up else -1:.1f} s")
     # issue #187: QEMU has no radio: the simulated access point; the web password of the flashed
     # config.json (clear text, moved to NVS at the first boot) gave its PMK, the WPA2 key
     ap_try = gw.wait_log(r"ap: SIMULATED \(QEMU has no radio\) commissioning access point '%s' "
@@ -9908,23 +9935,42 @@ def run_factory_reset(args, work):
     obs.drain()
     pressed = time.monotonic()
     gw.console("boot 1")
-    warn = gw.wait_log(r"button: BOOT held: factory reset at 10 s", 5, pressed)
-    fired = gw.wait_log(r"button: BOOT held 10 s: factory reset", 15, pressed)
-    death = obs.wait(f"{T}/NDEATH/{node}", 10)
+    warn = gw.wait_log(r"button: BOOT held 2 s: release it now for the access point", 5, pressed)
+    mark = gw.wait_log(r"button: BOOT held 10 s: release it now for a factory reset \(2 beeps\)",
+                       15, pressed)
+    led10 = gw.wait_log(r"led: status: BOOT held 10 s$", 2, mark or pressed)
+    warn2 = gw.wait_log(r"buzzer: 2 beep\(s\) \(simulated\)", 2, mark or pressed)
+    # Issue #292: the 2 beeps at 10 s are a warning: while the button stays down, nothing is
+    # erased and the session stays (a person who holds the button longer)
+    time.sleep(3)
+    released = time.monotonic()
+    early = gw.find(r"storage: factory reset|button: BOOT released after", pressed)
+    early_death = obs.wait(f"{T}/NDEATH/{node}", 0.2)
+    gw.console("boot 0")
+    fired = gw.wait_log(r"button: BOOT released after \d+ ms: factory reset", 5, released)
+    conf2 = gw.wait_log(r"buzzer: 2 beep\(s\) \(simulated\)", 5, released)
+    erased = gw.wait_log(r"storage: factory reset: erasing LittleFS 'storage' and NVS", 10, released)
+    death = obs.wait(f"{T}/NDEATH/{node}", 10, since=released)
     commissioning = gw.wait_log(r"main: commissioning: no configuration since the factory reset", 30,
                                 pressed)
     beep1 = gw.find(r"buzzer: 1 beep\(s\) \(simulated\)", t_short)
-    beep2 = gw.find(r"buzzer: 2 beep\(s\) \(simulated\)", pressed)
-    check("IO-6 / CFG-5 buzzer: 1 beep for the access point gesture, 2 beeps confirm the factory "
-          "reset (patterns logged by the QEMU build)", beep1 and beep2,
+    check("IO-6 / CFG-5 buzzer: 1 beep for the access point gesture; issue #292: 2 beeps at 10 s "
+          "while the button is down (a warning), and 2 beeps at the release confirm the factory "
+          "reset before the erase (patterns logged by the QEMU build)",
+          beep1 and warn2 and warn2 < released and conf2 and erased and conf2 <= erased,
           " | ".join(gw.find(r"buzzer: \d beep", t_short)) or "no beep logged")
-    check("CFG-5 BOOT held 10 s -> factory reset (LED and log at 2 s, at 10 s), orderly NDEATH, "
-          "restart into commissioning; a 3 s press is the access point gesture, not a reset",
-          nb and ap and warn and fired and death and commissioning
-          and fired - pressed >= 9.5,
-          f"NBIRTH {node}: {bool(nb)}; 3 s press: {bool(ap)}; warning after "
-          f"{(warn - pressed) if warn else -1:.1f} s, reset after {(fired - pressed) if fired else -1:.1f} s; "
-          f"NDEATH: {bool(death)}; commissioning: {bool(commissioning)}")
+    check("CFG-5 BOOT held 10 s, then released -> factory reset (LED and log at 2 s, at 10 s). "
+          "Issue #292: nothing is erased while the button stays down after 10 s; the release "
+          "starts the reset: orderly NDEATH, restart into commissioning; a 3 s press is the "
+          "access point gesture, not a reset",
+          nb and ap and warn and mark and led10 and not early and early_death is None and fired
+          and death and commissioning and mark - pressed >= 9.5 and fired >= released,
+          f"NBIRTH {node}: {bool(nb)}; 3 s press: {bool(ap)}; 2 s mark after "
+          f"{(warn - pressed) if warn else -1:.1f} s, 10 s mark after "
+          f"{(mark - pressed) if mark else -1:.1f} s, LED {bool(led10)}; held 3 s more: "
+          f"{early[:1] or 'nothing'}, NDEATH {early_death is not None}; reset "
+          f"{(fired - released) if fired else -1:.1f} s after the release; NDEATH: {bool(death)}; "
+          f"commissioning: {bool(commissioning)}")
     t1 = commissioning or time.monotonic()
     ap_comm = gw.wait_log(r"ap: SIMULATED \(QEMU has no radio\) commissioning access point '%s' "
                           r"\(WPA2, the commissioning password\)" % AP_SSID_RX, 10, t1 - 5)

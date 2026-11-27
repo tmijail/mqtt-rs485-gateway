@@ -1,8 +1,9 @@
 /* BOOT button (GPIO0) watcher: samples it every 20 ms in a small task and reports the
- * gestures of gw_button.h (CFG-5 factory reset after 10 s, NET-5 access point after a
- * 2-10 s press). LED feedback while held; two buzzer beeps at the reset (gw_buzzer). Issue
- * #187: the beep of the access point gesture comes from the handler, only when it accepts the
- * gesture. */
+ * marks and the gestures of gw_button.h (issue #292: a mark at 2 s and at 10 s while held;
+ * CFG-5 factory reset at a release after 10 s, NET-5 access point at a release after 2-10 s).
+ * LED feedback while held; two buzzer beeps at the 10 s mark (a warning) and two at the release
+ * that starts the factory reset (gw_buzzer). Issue #187: the beeps of the access point (at the
+ * 2 s mark and at the release) come from the handler, only when it accepts the gesture. */
 #pragma once
 
 #include <stdbool.h>

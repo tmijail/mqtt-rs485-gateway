@@ -24,9 +24,10 @@ The window opens only when no web password is set. This is the case on a new gat
 
 | Signal | What it tells |
 |---|---|
-| LED white, blinks fast (from 2 s of the push) | Release the button now for the access point and the window. At 10 s, the gateway does a factory reset |
+| 1 beep at 2 s of the push, and the LED white, blinks fast | Release the button now for the access point and the window |
+| 2 beeps at 10 s of the push, and the LED white, continuous | Do not release the button if you do not want a factory reset. A release now does a factory reset |
 | 1 beep when you release the button | The access point starts, and the claim window opens |
-| No beep when you release the button | The gateway did not complete its boot, and it ignored the push. Wait, then push again |
+| No beep at 2 s, and no beep when you release the button | The gateway did not complete its boot, and it ignored the push. Wait, then push again |
 | LED blue and white, alternately | The claim window is open. The access point has no key |
 | 1 beep after you set the password | The gateway stored the password. The window is closed |
 | LED with a short cyan flash each 2 s | The access point is on, with WPA2 |
@@ -34,8 +35,8 @@ The window opens only when no web password is set. This is the case on a new gat
 
 ## Procedure
 
-1. Push the BOOT button for 2 to 10 s. Release it when the LED blinks white.
-2. Make sure that you hear 1 beep, and that the LED shows blue and white, alternately.
+1. Push the BOOT button for 2 to 10 s. Release it after the first beep (at 2 s).
+2. Make sure that you hear 1 more beep, and that the LED shows blue and white, alternately.
 3. On the phone, connect to the Wi-Fi network `GW-Setup-XXXXXX` in 5 min or less. The network has no key during the window. `XXXXXX` is the end of the MAC address of the board.
 4. Open the secure page of the gateway in the browser:
    1. Wait for the captive portal window of the phone. Android shows "Sign in to GW-Setup-XXXXXX". iOS shows a sheet with the name `GW-Setup-XXXXXX`.
@@ -59,7 +60,7 @@ The window opens only when no web password is set. This is the case on a new gat
 9. Open `https://192.168.4.1/` as in step 4: the phone can show the guide page again. Type the user name and the new password in the login dialog of the browser. In commissioning and in recovery, any user name is valid.
 10. Make sure that the web UI opens.
 
-You can now do the work in the web UI. When you complete the work, close the access point: refer to [Get on the access point on a later visit](get-on-the-access-point.md), step 7. From a computer on the plant network, use the addresses of step 6: `https://<ip>/` or `https://<hostname>.local/`.
+You can now do the work in the web UI. When you complete the work, close the access point: refer to [Get on the access point on a later visit](get-on-the-access-point.md), step 8. From a computer on the plant network, use the addresses of step 6: `https://<ip>/` or `https://<hostname>.local/`.
 
 ## Times
 
@@ -74,7 +75,7 @@ You can now do the work in the web UI. When you complete the work, close the acc
 | "No claim window is open" | The time is over, the access point stopped, or you did not push BOOT. Do step 1 again |
 | "accepts only a client of the access point" | You are on the plant network. Connect to `GW-Setup-XXXXXX` (step 3) |
 | The browser does not open `https://192.168.4.1/` (step 4) | Make sure that the phone is on `GW-Setup-XXXXXX`. The network has no Internet: tell the phone to stay on it. If the phone uses the mobile data for the browser, turn off the mobile data |
-| "a web password is set" | Somebody set the password. If it was not you, do a factory reset (push BOOT for more than 10 s), then do this procedure again |
+| "a web password is set" | Somebody set the password. If it was not you, do a factory reset (hold BOOT until the 2 beeps at 10 s, then release it), then do this procedure again |
 | "Use 8 to 63 characters", or "the web password must have …" | Type a password that obeys the rule. Do not use letters with accents |
 | "The two passwords are not the same." | Type the same password in the two fields |
 | HTTP 429 | Too many refused attempts from your address. Wait 30 s or more |

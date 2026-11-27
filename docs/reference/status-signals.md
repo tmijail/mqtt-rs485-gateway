@@ -35,7 +35,8 @@ The LED shows the pattern of the highest state in the table.
 | State | Pattern |
 |---|---|
 | Factory reset in progress, also at a boot that completes a factory reset after a power cut | White, continuous |
-| BOOT pushed for more than 2 s | White, blinks at 4 Hz |
+| BOOT held for more than 10 s: a release starts the factory reset | White, continuous |
+| BOOT held for 2 to 10 s: a release starts the access point | White, blinks at 4 Hz |
 | Identify (10 s) | Red, green and blue in turn, each color 250 ms (4 Hz) |
 | Claim window open, or access point open (no key) | Blue and white, alternately (each color 250 ms) |
 | Commissioning | Blue, blinks at 1 Hz |
@@ -57,9 +58,11 @@ One beep is 150 ms of tone and 150 ms of silence.
 
 | Signal | When |
 |---|---|
-| 1 beep | You release BOOT after 2 to 10 s, after the end of the boot: the access point starts (and the claim window opens, if no web password is set). During the boot, the gateway ignores the push and gives no beep. The log gives `BOOT gesture ignored: still starting (no beep)` |
+| 1 beep | BOOT held for 2 s, after the end of the boot. Release the button now to start the access point. During the boot, the gateway gives no beep. The log gives `BOOT held 2 s, no beep: still starting, a release now does nothing` |
+| 1 beep | You release BOOT after 2 to 10 s, after the end of the boot: the access point starts (and the claim window opens, if no web password is set). During the boot, the gateway ignores the release and gives no beep. The log gives `BOOT gesture ignored: still starting (no beep)` |
 | 1 beep | The claim window set the first web password |
-| 2 beeps | BOOT held for 10 s, or a factory reset from the web UI, the REST API or the shell: the factory reset starts |
+| 2 beeps | BOOT held for 10 s: a warning. Release the button now to start the factory reset. While you hold the button, the gateway erases nothing |
+| 2 beeps | You release BOOT after 10 s, or a factory reset from the web UI, the REST API or the shell: the factory reset starts |
 | 1 short beep each 0.5 s, for 10 s | Identify. The beep is 150 ms of tone. The alarms and the other beeps wait until the end |
 | 1 beep each 10 s | Alarm `device_offline`: one or more Modbus devices are offline. A disabled device does not count |
 | 2 beeps each 10 s | Alarm `mqtt_down`: no Sparkplug session |
@@ -71,11 +74,21 @@ The alarms sound only when `local_io.buzzer.alarms` contains them. `mqtt_down` a
 
 The firmware reads the button only after the boot. It must see the button released one time.
 
-| Push | Result |
-|---|---|
-| Less than 2 s | Nothing |
-| 2 to 10 s | The access point starts, or its times start again. Without a web password, the claim window also opens |
-| More than 10 s | Factory reset: the gateway erases the configuration, the secrets and the commissioning password. Then it restarts in commissioning mode. The web UI, `POST /api/factory-reset?confirm=1` and the shell command `factory-reset` do the same factory reset |
-| Held at power-on | The ROM starts the download mode for a flash over USB. The firmware does not start |
+The gateway gives a signal at 2 s and at 10 s while you hold the button. The action starts when you release the button (#292).
+
+| Push | While you hold the button | At the release |
+|---|---|---|
+| Less than 2 s | Nothing | Nothing |
+| 2 to 10 s | At 2 s: 1 beep, and the LED blinks white | 1 beep. The access point starts, or its times start again. Without a web password, the claim window also opens |
+| More than 10 s | At 10 s: 2 beeps, and the LED is white | 2 beeps. Factory reset: the gateway erases the configuration, the secrets and the commissioning password. Then it restarts in commissioning mode |
+| Held at power-on | The ROM starts the download mode for a flash over USB. The firmware does not start | — |
+
+The web UI, `POST /api/factory-reset?confirm=1` and the shell command `factory-reset` do the same factory reset as the button.
+
+During the boot, the gateway gives no beep at 2 s and ignores a release between 2 and 10 s. The factory reset operates also during the boot.
+
+The gateway has no time limit for a push. After 10 s, the factory reset starts at the release, also after a push of some minutes. To stop a factory reset after the 2 beeps, disconnect the power while you hold the button. Then release the button, and connect the power again.
+
+A button that stays down, for example a defective button, gives the 2 beeps at 10 s, then nothing more. The gateway continues its work, and the LED stays white. The factory reset starts only when the button comes up.
 
 For the access point, refer to [The access point](access-point.md). For the clock signals, refer to [The clock and the RTC battery](clock-and-rtc-battery.md).

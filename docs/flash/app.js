@@ -663,8 +663,8 @@ ${S.webOpened ? `<p><b>The web UI opened in a new tab.</b> This panel stays here
         const d = reader.data;
         return `<div class="gwf-head"><h3>The configuration turns the web UI off.</h3><p class="gwf-mut">The gateway runs firmware ${esc(d.firmware)} in ${esc(d.mode)} mode. Its web UI does not open.</p></div>${notices()}
 <div class="gwf-cols"><div class="gwf-box gwf-col1"><b class="gwf-mut">Recommended</b>
-<div class="gwf-rec"><b>Push BOOT for 2 to 10 s, until the LED blinks white.</b><p>The gateway opens the access point and its web UI. Then the page reads the board again.</p></div>
-${warn("Release BOOT before 10 s.", "A push of 10 s does a factory reset.")}</div>
+<div class="gwf-rec"><b>Push BOOT until you hear 1 beep (at 2 s), then release it.</b><p>The gateway opens the access point and its web UI. Then the page reads the board again.</p></div>
+${warn("Release BOOT before 10 s.", "At 10 s, the gateway gives 2 beeps. A release after the 2 beeps does a factory reset.")}</div>
 <div class="gwf-box gwf-col1"><b class="gwf-mut">Other actions</b>
 <button type="button" class="gwf-btn" data-act="tab" data-arg="console">Console: change the configuration</button>
 <button type="button" class="gwf-btn" data-act="retry">Read again</button>
