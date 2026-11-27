@@ -50,6 +50,7 @@
 #include "sdkconfig.h"
 #if CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG
 #include "driver/usb_serial_jtag.h"   /* #293: coredump dump waits for the host */
+#include "esp_rom_sys.h"
 #endif
 
 static const char *TAG = "shell";
@@ -1496,6 +1497,28 @@ static int cmd_stacks(int argc, char **argv)
 }
 ATOMIC(cmd_stacks)
 
+/* #293 test: sample usb_serial_jtag_is_connected() for N seconds, with the cable connected */
+static int cmd_usjprobe(int argc, char **argv)
+{
+    int secs = argc == 2 ? atoi(argv[1]) : 5;
+    unsigned samples = 0, falses = 0, falls = 0;
+    bool last = true;
+    int64_t end = esp_timer_get_time() + (int64_t)secs * 1000000;
+    while (esp_timer_get_time() < end) {
+        bool c = usb_serial_jtag_is_connected();
+        samples++;
+        falses += c ? 0u : 1u;
+        falls += (last && !c) ? 1u : 0u;
+        last = c;
+        esp_rom_delay_us(200);
+        if (samples % 50 == 0) {
+            vTaskDelay(1);
+        }
+    }
+    out("usjprobe %d s: samples %u, not connected %u, falls %u\n", secs, samples, falses, falls);
+    return 0;
+}
+
 /* #287 test: the pad configuration and the output level of the RS485 DE pin (GPIO21) */
 static int cmd_gpio21(int argc, char **argv)
 {
@@ -2128,6 +2151,8 @@ esp_err_t gw_shell_start(const gw_shell_ctx_t *ctx)
          "the IDF and gateway tasks", .func = cmd_stacks_atomic},
         {.command = "gpio21", .help = "BOARD TEST BUILD ONLY (#287): the pad of the RS485 DE pin",
          .func = cmd_gpio21},
+        {.command = "usjprobe", .help = "BOARD TEST BUILD ONLY (#293): sample the USB connection "
+         "state", .func = cmd_usjprobe},
         {.command = "log", .help = "The log levels and the tags; '<tag|*> <level>' sets the level "
          "of a tag, 'reset' sets every tag to the level of the build (not saved, #199)",
          .hint = "[<tag|*> <none|error|warn|info|debug|verbose> | reset]", .func = cmd_log_atomic},
