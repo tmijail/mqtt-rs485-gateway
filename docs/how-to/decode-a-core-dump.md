@@ -4,8 +4,6 @@ This procedure tells how to get the core dump of a gateway after a crash, and ho
 
 > **Warning: Keep the dump file as safe as the passwords of the gateway.** The dump is a copy of the RAM at the crash. It can contain the MQTT password, TLS session keys and the private key of the device certificate, in clear text.
 
-> **Warning: Do not use this document as verified data for the board.** The procedure ran only with the firmware in QEMU (issue #132). Nobody tested it on the board (#18).
-
 ## Before you start
 
 You need:
