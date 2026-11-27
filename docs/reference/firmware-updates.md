@@ -169,21 +169,23 @@ The counter is in RTC memory that a reset does not clear (`RTC_NOINIT`, with a m
 | Reset reason | Counter |
 |---|---|
 | Panic, interrupt watchdog, task watchdog, other watchdog, CPU lock-up | +1 |
-| Power-on, brownout, power glitch, a bad magic number or CRC | 0 |
-| Software (a planned restart), the reset button, other reasons | No change |
+| Power-on (also the RESET button of the board), brownout, power glitch, a bad magic number or CRC | 0 |
+| Software (a planned restart), an external reset pin, other reasons | No change |
+
+The RESET button of the board resets the chip through its EN pin. The chip then gives the reset reason `power-on`, as after a power cut. Thus a push of RESET sets the counter to 0, and it also ends safe mode. The first board gave this reset reason for the RESET button (#129 M9).
 
 - A pending image ignores the counter: its trial protects it.
 - The counter goes to 0 after 120 s of uptime in normal mode (`CONFIG_GW_FW_BOOTLOOP_CLEAR_S`). It also goes to 0 at a restart that the operator asks for: the shell, the web UI, the NCMD Reboot, a configuration save.
 - At 3, the gateway boots in **safe mode**: recovery mode with the cause "repeated crashes".
 - In safe mode, the network, the web UI (also with `web.enabled: false`), the shell and the firmware upload run. Modbus, Sparkplug, Modbus TCP, the spill to the card and the NVS migration do not run. The firmware does not load the configuration. The network uses the [recovery network](#the-recovery-network).
-- Safe mode ends after 60 min (`CONFIG_GW_FW_SAFE_MODE_MIN`) with a restart that tries normal mode again. The counter is then 2, thus one more crash starts safe mode again. A restart by the operator or a power cycle also ends safe mode.
+- Safe mode ends after 60 min (`CONFIG_GW_FW_SAFE_MODE_MIN`) with a restart that tries normal mode again. The counter is then 2, thus one more crash starts safe mode again. A restart by the operator, a push of RESET or a power cycle also ends safe mode.
 - There is no automatic boot of the other slot. It could do a downgrade across data formats that nobody examined.
 - The shell (line `bootloop`) and `GET /api/firmware` (`boot_count`, `safe_mode`) show the counter.
 
 **Safe mode on request (#209).** `POST /api/restart?safe=1`, the shell command `restart safe` and the button **Restart into safe mode** set a request in the same RTC record.
 
 - The next boot takes the request, for one boot only, and starts safe mode with the cause "request". The counter does not change.
-- A power-on, a brownout or a power glitch removes the request.
+- A power-on, a push of RESET, a brownout or a power glitch removes the request.
 - The firmware refuses the request during an update, during the trial of a new image (the restart would roll it back) and in safe mode.
 - `GET /api/status` gives `safe_mode` with the cause and the time left.
 

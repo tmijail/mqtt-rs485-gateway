@@ -520,11 +520,19 @@ static const char *reset_reason(void)
 
 void app_main(void)
 {
+    /* Issue #287: first, in every mode. Until here the DE pin is an input, and the isolator then
+     * gives a high DE: the transceiver holds the RS485 bus. The fault, safe, recovery and
+     * commissioning modes do not start gw_bus, so nothing else drives the pin in them. */
+    const esp_err_t de_err = gw_rs485_de_off();
     const esp_app_desc_t *app = esp_app_get_description();
     s_info.firmware = app->version;
     s_info.reset_reason = reset_reason();
     ESP_LOGI(TAG, "%s %s (IDF %s), reset reason: %s", app->project_name, app->version,
              app->idf_ver, s_info.reset_reason);
+    if (de_err != ESP_OK) {
+        ESP_LOGE(TAG, "RS485 DE not set inactive (%s): the transceiver can hold the bus",
+                 esp_err_to_name(de_err));
+    }
     /* issue #144 item 4: the boot-loop counter, before anything that can crash in a loop (the
      * storage, the configuration) */
     s_safe = gw_fw_bootloop_start();

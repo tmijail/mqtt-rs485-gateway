@@ -76,7 +76,8 @@ uint32_t gw_bootloop_boot(gw_bootloop_t *r, gw_reset_kind_t why, bool pending)
         }
         break;
     default:
-        break;   /* a planned restart, the reset button, the others */
+        break;   /* a planned restart, an external reset pin, the others (the RESET button of
+                  * the board is the EN pin: the chip gives power-on, #129 M9) */
     }
     store(r, count, request);
     return count;
