@@ -90,10 +90,11 @@ This procedure uses the BOOT button at the panel. To do the factory reset from a
 
 1. Make sure that the gateway completed its boot.
 2. Push the BOOT button, and hold it.
-3. At 2 s, the LED blinks white. Continue to hold the button.
-4. At 10 s, the gateway gives two beeps, and the LED becomes white. Release the button.
-5. Wait for the restart. The LED blinks blue: commissioning mode.
-6. Do the steps of [The gateway has no configuration](#the-gateway-has-no-configuration).
+3. At 2 s, the gateway gives 1 beep, and the LED blinks white. Continue to hold the button.
+4. At 10 s, the gateway gives 2 beeps, and the LED becomes white. Release the button.
+5. Make sure that you hear 2 more beeps. The factory reset starts.
+6. Wait for the restart. The LED blinks blue: commissioning mode.
+7. Do the steps of [The gateway has no configuration](#the-gateway-has-no-configuration).
 
 Do not push BOOT when you connect the power. GPIO0 is a strapping pin: the ROM then starts the download mode, and the firmware does not start.
 
@@ -119,8 +120,8 @@ If the power goes off during the factory reset, connect the power again. The gat
 
 With `web.enabled: false`, the gateway starts no web server in normal mode. MQTT, Modbus and the other services continue. The BOOT button starts the web server again until the next restart.
 
-1. Push the BOOT button of the gateway for 2 to 10 s. Release it when the LED blinks white.
-2. Make sure that you hear 1 beep. The web server and the access point start.
+1. Push the BOOT button of the gateway for 2 to 10 s. Release it after the first beep (at 2 s).
+2. Make sure that you hear 1 more beep. The web server and the access point start.
 3. Open the web UI on the plant network, or on the access point. Refer to [Get on the access point on a later visit](get-on-the-access-point.md).
 4. In the Configuration tab, go to the card **Web interface**.
 5. Turn on **Enabled**.

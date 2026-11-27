@@ -110,10 +110,10 @@ If no network is available, use the access point: refer to [Get on the access po
 
 ## The web UI is off
 
-1. Push BOOT for 2 to 10 s, until the LED blinks white. The gateway opens the access point and its web UI.
+1. Push BOOT until you hear 1 beep (at 2 s), then release it. The gateway opens the access point and its web UI.
 2. Click **Read again**.
 
-> **Caution: Release BOOT before 10 s.** A push of 10 s does a factory reset.
+> **Caution: Release BOOT before 10 s.** At 10 s, the gateway gives 2 beeps. A release after the 2 beeps does a factory reset.
 
 For the other ways, refer to [The web interface is off](recover-the-gateway.md#the-web-interface-is-off).
 
@@ -129,7 +129,7 @@ On Linux, your user must have the permission for the serial port, for example th
 
 The page shows "The flash did not start" when the board does not go into its download mode. Nothing is erased. Put the board in the download mode by hand.
 
-> **Caution: Do not hold BOOT while the gateway has power.** A push of 2 to 10 s opens the access point. A push of 10 s does a factory reset.
+> **Caution: Do not hold BOOT while the gateway has power.** A push of 2 to 10 s opens the access point. A push of more than 10 s does a factory reset at the release.
 
 1. Remove all the power: the USB cable, PoE and the terminal block.
 2. Hold the BOOT button.

@@ -193,7 +193,7 @@ The restart also sets the Modbus counters to 0, because they are only in RAM. Th
 
 | Start | Rule |
 |---|---|
-| BOOT for 10 s at the panel | The firmware reads the button only after the boot, and it must see the button released one time. GPIO0 is a strapping pin: a push at power-on starts the download mode of the ROM. At 2 s, the LED changes to white. At 10 s, the gateway gives two beeps and erases |
+| BOOT held for 10 s at the panel, then released | The firmware reads the button only after the boot, and it must see the button released one time. GPIO0 is a strapping pin: a push at power-on starts the download mode of the ROM. At 2 s, the LED changes to white. At 10 s, the gateway gives two beeps as a warning. The erase starts at the release, after two more beeps (#292) |
 | The web UI: the card **Restart and reset** of the Status tab, with the word `ERASE` | The same reset as BOOT (#203) |
 | `POST /api/factory-reset?confirm=1` | The same reset. Refer to [The REST API](rest-api.md#post-apifactory-reset) |
 | The shell command `factory-reset` | It asks for the word `ERASE` |

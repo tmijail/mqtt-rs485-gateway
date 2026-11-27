@@ -109,7 +109,7 @@ The checks have these limits:
 | `test_syslog` | REL-4: severity, the line parser, RFC 3339 timestamps, the RFC 5424 format, a full ring without a wait, discards. #232: the hostname read stops at the end of its buffer |
 | `test_auth` | SHA-256, HMAC, PBKDF2, the password hash, Basic auth. #100 CSRF check. #106 canonical `Host` and `Origin`, and 17 malformed authorities |
 | `test_cfgdoc` | Secrets in the document (mask, delete, migration), errors with a path, masked export and re-import, the Modbus keys after re-import. #187 the PMK of the access point. #91 the print is byte for byte `cJSON_Print`. #106 the JSON lock with two threads |
-| `test_button` | BOOT: reset at 10 s, the 2–10 s gesture, a button pressed from boot, bounces, clock wrap |
+| `test_button` | BOOT (#292): the marks at 2 s and at 10 s while the button is held, the factory reset and the 2–10 s gesture at the release, a release at the 10 s limit, a button pressed from boot, a button that stays down, bounces, clock wrap |
 | `test_mbap` | MB-15 Modbus TCP: MBAP frames, forwarded functions, exceptions 01/03/0A/0B, the client list, the refusal through the access point (#120) |
 | `test_dout` | TCA9554: polarity of 8 channels, boot sequence, read-back, bus errors, retry with backoff (#74). IO-3: the latch of `hold` outputs |
 | `test_localio` | IO-3 boot state and safe state, IO-4 save schedule, IO-7 rules `follow`, `invert`, `toggle` |

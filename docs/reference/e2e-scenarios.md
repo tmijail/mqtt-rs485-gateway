@@ -124,8 +124,8 @@ Nodes `GW04`, `GW05`, `GW06`: the REST API and the web UI.
 
 Nodes `GW07`, `GW08`, `GW09`, `GW10`, `GW11`: the BOOT button, commissioning and the access point.
 
-- **CFG-5:** `boot 1` held for 10 s gives the factory reset: a warning at 2 s, an orderly NDEATH, commissioning mode, no block of the old configuration in the partition. The old web password gives 401, and the new commissioning password works.
-- **NET-5:** a 2–10 s press starts the access point.
+- **CFG-5:** `boot 1` held for 10 s gives a mark at 2 s and at 10 s (the log, the LED and the beeps). While the button stays down after 10 s, nothing is erased and no NDEATH comes. `boot 0` then gives the factory reset (#292): 2 beeps before the erase, an orderly NDEATH, commissioning mode, no block of the old configuration in the partition. The old web password gives 401, and the new commissioning password works.
+- **NET-5:** a 2–10 s press starts the access point. The 1 beep at 2 s comes before the release, and 1 more beep comes at the release (#292).
 - **#120 claim window:** no window with a web password set. In commissioning, the gesture opens the window for its time. Only a client of the access point can set the password, with the CSRF header. After the set, the window is closed. The password is in no log line.
 - **#187:** the WPA2 PMK of the access point is the web password, and a factory reset removes it. `POST /api/ap/stop`, and the stop after the idle time.
 - **#248 (`GW09`):** an NVS with the hash of a web password and no PMK, made with `nvs_partition_gen.py`. The access point uses the commissioning password, and the log shows the warning. The same password as a new value of `web.password` gives the PMK. This check does not run in the secure variant.

@@ -38,8 +38,8 @@ typedef struct {
     const char *fault;            /* #135: cfg is NULL because of a hardware fault (no PSRAM) */
     const gw_node_info_t *info;
     void (*restart)(void);        /* orderly restart (NDEATH first when a session is up) */
-    /* #203: erase (as BOOT held 10 s) and restart in commissioning; ESP_ERR_INVALID_STATE:
-     * refused, nothing erased */
+    /* #203: erase (as BOOT released after 10 s) and restart in commissioning;
+     * ESP_ERR_INVALID_STATE: refused, nothing erased */
     esp_err_t (*factory_reset)(void);
 } gw_shell_ctx_t;
 

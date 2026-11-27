@@ -83,7 +83,7 @@ For the procedure with a phone, refer to [Set the first web password on site](..
 
 | Event | Modes |
 |---|---|
-| A push of BOOT for 2 to 10 s, after the end of the boot | All modes |
+| A push of BOOT for 2 to 10 s, after the end of the boot. The access point starts at the release | All modes |
 | The boot | Only the modes without a valid configuration: recovery, commissioning, safe mode and the PSRAM fault mode |
 
 A push of BOOT while the access point runs starts its times again. A push during the boot has no effect and gives no beep.
@@ -170,7 +170,7 @@ The status LED and the buzzer give the state of the access point and the result 
 
 - The claim window, or an open access point: blue and white, alternately.
 - The access point with WPA2: a short cyan flash each 2 s over the pattern of the gateway.
-- BOOT released after 2 to 10 s, after the end of the boot: 1 beep. During the boot, no beep.
+- BOOT held for 2 s, after the end of the boot: 1 beep. Then BOOT released before 10 s: 1 more beep. During the boot, no beep.
 - The claim window set the web password: 1 beep.
 
 ## The card "Access point" of the web UI

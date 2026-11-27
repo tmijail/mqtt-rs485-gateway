@@ -1,7 +1,9 @@
 /* Gateway status flags and the RGB status LED (IO-5).
  *
  * LED patterns, highest priority first:
- *   BOOT held for a reset  white, fast blink (4 Hz) from 2 s; steady white at the reset
+ *   factory reset, or      white, steady (issue #292: from 10 s of BOOT, the release starts
+ *   BOOT held 10 s         the factory reset)
+ *   BOOT held 2 s          white, fast blink (4 Hz): the release starts the access point
  *   identify (#207)        red, green and blue in turn at 4 Hz, for 10 s (POST /api/identify,
  *                          the shell's identify)
  *   claim window open, or  blue and white, alternating every 250 ms (issue #120: the web
@@ -34,7 +36,7 @@ extern "C" {
 #define GW_ST_NET_UP    (1u << 1)
 #define GW_ST_MQTT_UP   (1u << 2)
 #define GW_ST_MB_FAULT  (1u << 3)
-#define GW_ST_BUTTON    (1u << 4)   /* BOOT held long enough to be a reset gesture */
+#define GW_ST_BUTTON    (1u << 4)   /* BOOT held 2 s: a release starts the access point */
 #define GW_ST_RESETTING (1u << 5)   /* factory reset in progress */
 #define GW_ST_COMMISSIONING (1u << 6)
 #define GW_ST_CLAIM     (1u << 7)   /* CFG-3 / NET-5 claim window open (issue #120) */
@@ -42,6 +44,8 @@ extern "C" {
 #define GW_ST_AP_OPEN   (1u << 9)   /* ... with no key (the open period of a claim window) */
 #define GW_ST_NO_CLOCK  (1u << 10)  /* issue #160: the MQTT session waits for a valid clock */
 #define GW_ST_SAFE_MODE (1u << 11)  /* issue #209: safe mode (on request or after crashes) */
+#define GW_ST_BUTTON_RESET (1u << 12)  /* issue #292: BOOT held 10 s: a release starts the
+                                          * factory reset */
 
 void gw_status_set(uint32_t flag, bool on);
 
