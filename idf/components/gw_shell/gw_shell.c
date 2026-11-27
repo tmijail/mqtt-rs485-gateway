@@ -1370,10 +1370,9 @@ static int coredump_dump(void)
     s_cd_diag.waitfail = s_cd_diag.drvshort = 0;
     gw_cdump_copy_t rc = gw_cdump_copy(&io, st, size, w);   /* zeroes w */
     heap_caps_free(w);
-    out("cdstat mode %d writes %u short %u ferr %u notconn %u waitfail %u drvshort %u lbf %d nbf %d\n",
+    out("cdstat mode %d writes %u short %u ferr %u notconn %u waitfail %u drvshort %u\n",
         s_cd_diag.mode, s_cd_diag.writes, s_cd_diag.shorts, s_cd_diag.ferrs, s_cd_diag.notconn,
-        s_cd_diag.waitfail, s_cd_diag.drvshort, (stdout->_flags & __SLBF) != 0,
-        (stdout->_flags & __SNBF) != 0);
+        s_cd_diag.waitfail, s_cd_diag.drvshort);
     if (rc == GW_CDUMP_COPY_STALLED) {
         ESP_LOGW(TAG, "coredump dump: the console did not read the output in time, the copy "
                       "stopped (#293)");
