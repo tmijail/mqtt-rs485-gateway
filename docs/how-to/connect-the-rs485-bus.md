@@ -23,6 +23,9 @@ You need:
 | Termination | A 120 Ω resistor between A and B, behind a jumper with the positions `NC` and `120R`. The jumper is on `NC` at delivery | Waveshare FAQ, inspection of the first board (#18) | Verified with a resistance measurement on the first board |
 | Bias (fail-safe) | No bias resistors. The resistance between A and B without power and with `NC` is too high for a bias network | Inspection of the first board (#18) | Probable. The idle voltage of the bus is not measured, see #127 |
 | Indicator | An LED shows the TX and RX activity of the RS485 port | Waveshare wiki | Not verified on the board, see #127 |
+| DE at a reset | An isolator connects GPIO21 to the DE input of the SP3485E. When GPIO21 is not an output, the isolator gives a high DE, and the transceiver drives the bus | Data sheet of the isolator (HOPERF CMT8263N1), measurement on the first board with the 120R jumper closed (#287) | Verified on the first board. The firmware change of #287 is not verified on the board |
+
+The gateway holds the bus at each reset and at each restart, until the application of the firmware starts (#287). During this time, the transceiver of the gateway transmits the idle state, and the other devices cannot transmit. The firmware cannot control the transceiver before the application starts. Then the firmware sets DE to the inactive level, in each mode of the gateway. After this step, the transmitter is on only while the gateway sends a request. For the limit, refer to [Known limitations](../reference/known-limitations.md#modbus-mb-6-mb-15).
 
 The Waveshare FAQ tells you to move the jumper to 120R if the devices do not answer. It also says that some devices need "a 120R resistor to be connected in series". This text is not correct. A termination resistor connects between A and B, in parallel with the bus.
 
