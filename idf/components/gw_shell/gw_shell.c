@@ -1424,6 +1424,71 @@ static int cmd_coredump(int argc, char **argv)
     return 0;
 }
 
+/* ------------------------------------------------------------------------------------------
+ * BOARD TEST BUILD ONLY (#129 M4, M9, M10). This branch (board-test/129-wdt-crash) is never
+ * merged into main. The commands make the watchdogs trigger and the chip panic on purpose.
+ * ------------------------------------------------------------------------------------------ */
+static void wdt_spin_task(void *arg)
+{
+    (void)arg;
+    for (;;) {
+        /* no delay, no yield: the idle task of this core never runs again */
+    }
+}
+
+static int cmd_wdt(int argc, char **argv)
+{
+    if (argc == 2 && strcmp(argv[1], "task") == 0) {
+        BaseType_t core = xPortGetCoreID();
+        out("wdt task: a task spins on core %d at priority 1; the idle task of core %d stops; "
+            "the task watchdog must trigger in about %d s\n", (int)core, (int)core,
+            CONFIG_ESP_TASK_WDT_TIMEOUT_S);
+        xTaskCreatePinnedToCore(wdt_spin_task, "wdt_spin", 2048, NULL, 1, NULL, core);
+        return 0;
+    }
+    if (argc == 2 && strcmp(argv[1], "int") == 0) {
+        out("wdt int: interrupts off on core %d, endless loop; the interrupt watchdog must "
+            "trigger in less than 1 s\n", (int)xPortGetCoreID());
+        vTaskDelay(pdMS_TO_TICKS(50));   /* let the line leave the console */
+        portDISABLE_INTERRUPTS();
+        for (;;) {
+        }
+    }
+    out("usage: wdt <task|int>  (board test build only, #129 M9)\n");
+    return 1;
+}
+
+static int cmd_crash(int argc, char **argv)
+{
+    (void)argc;
+    (void)argv;
+    out("crash: abort() now, the other core keeps running (board test build only, #129 M10)\n");
+    vTaskDelay(pdMS_TO_TICKS(50));
+    abort();
+    return 0;
+}
+
+/* #129 M4: the stack high-water mark of the IDF tasks that use the real drivers */
+static int cmd_stacks(int argc, char **argv)
+{
+    (void)argc;
+    (void)argv;
+    static const char *const names[] = {"tiT", "sys_evt", "wifi", "w5500_tsk", "esp_timer",
+                                        "ipc0", "ipc1", "IDLE0", "IDLE1", "mqtt_task",
+                                        "sparkplug", "rs485_bus", "local_io", "httpd",
+                                        "web_guard", "boot_button", "console_repl"};
+    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+        TaskHandle_t h = xTaskGetHandle(names[i]);
+        if (h == NULL) {
+            out("%-13s -\n", names[i]);
+        } else {
+            out("%-13s %u B free (high-water mark)\n", names[i],
+                (unsigned)uxTaskGetStackHighWaterMark(h));
+        }
+    }
+    return 0;
+}
+
 /* #207: the LED and the buzzer identify the gateway for 10 s (harmless: also without
  * CONFIG_GW_SHELL_WRITE_COMMANDS). */
 static int cmd_identify(int argc, char **argv)
@@ -2037,6 +2102,12 @@ esp_err_t gw_shell_start(const gw_shell_ctx_t *ctx)
          .hint = "<address>", .func = cmd_ping_atomic},
         {.command = "identify", .help = "The LED shows red, green and blue in turn and the "
          "buzzer beeps for 10 s (#207)", .func = cmd_identify_atomic},
+        {.command = "wdt", .help = "BOARD TEST BUILD ONLY (#129 M9): 'task' starves the idle "
+         "task of this core, 'int' disables the interrupts of this core", .hint = "<task|int>",
+         .func = cmd_wdt},
+        {.command = "crash", .help = "BOARD TEST BUILD ONLY (#129 M10): abort()", .func = cmd_crash},
+        {.command = "stacks", .help = "BOARD TEST BUILD ONLY (#129 M4): stack high-water marks of "
+         "the IDF and gateway tasks", .func = cmd_stacks},
         {.command = "log", .help = "The log levels and the tags; '<tag|*> <level>' sets the level "
          "of a tag, 'reset' sets every tag to the level of the build (not saved, #199)",
          .hint = "[<tag|*> <none|error|warn|info|debug|verbose> | reset]", .func = cmd_log_atomic},
