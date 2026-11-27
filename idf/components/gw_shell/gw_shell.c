@@ -1386,18 +1386,21 @@ static int cmd_wdt(int argc, char **argv)
         out("wdt task: a task spins on core %d at priority 1; the idle task of core %d stops; "
             "the task watchdog must trigger in about %d s\n", (int)core, (int)core,
             CONFIG_ESP_TASK_WDT_TIMEOUT_S);
+        out_flush();
         xTaskCreatePinnedToCore(wdt_spin_task, "wdt_spin", 2048, NULL, 1, NULL, core);
         return 0;
     }
     if (argc == 2 && strcmp(argv[1], "int") == 0) {
         out("wdt int: interrupts off on core %d, endless loop; the interrupt watchdog must "
             "trigger in less than 1 s\n", (int)xPortGetCoreID());
+        out_flush();
         vTaskDelay(pdMS_TO_TICKS(50));   /* let the line leave the console */
         portDISABLE_INTERRUPTS();
         for (;;) {
         }
     }
     out("usage: wdt <task|int>  (board test build only, #129 M9)\n");
+    out_flush();
     return 1;
 }
 
@@ -1406,6 +1409,7 @@ static int cmd_crash(int argc, char **argv)
     (void)argc;
     (void)argv;
     out("crash: abort() now, the other core keeps running (board test build only, #129 M10)\n");
+    out_flush();
     vTaskDelay(pdMS_TO_TICKS(50));
     abort();
     return 0;
@@ -1431,6 +1435,7 @@ static int cmd_stacks(int argc, char **argv)
     }
     return 0;
 }
+ATOMIC(cmd_stacks)
 
 /* #207: the LED and the buzzer identify the gateway for 10 s (harmless: also without
  * CONFIG_GW_SHELL_WRITE_COMMANDS). */
@@ -2049,7 +2054,7 @@ esp_err_t gw_shell_start(const gw_shell_ctx_t *ctx)
          .func = cmd_wdt},
         {.command = "crash", .help = "BOARD TEST BUILD ONLY (#129 M10): abort()", .func = cmd_crash},
         {.command = "stacks", .help = "BOARD TEST BUILD ONLY (#129 M4): stack high-water marks of "
-         "the IDF and gateway tasks", .func = cmd_stacks},
+         "the IDF and gateway tasks", .func = cmd_stacks_atomic},
         {.command = "log", .help = "The log levels and the tags; '<tag|*> <level>' sets the level "
          "of a tag, 'reset' sets every tag to the level of the build (not saved, #199)",
          .hint = "[<tag|*> <none|error|warn|info|debug|verbose> | reset]", .func = cmd_log_atomic},
