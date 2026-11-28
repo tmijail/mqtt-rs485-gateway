@@ -58,6 +58,7 @@ The harness makes these checks one time per run, after the scenarios:
 The main boot of `GW01`, with the slave, the main broker and the shell.
 
 - **Session (§7.1, SPB-3, #161):** NBIRTH with seq 0 and a bdSeq of 0 at the boot. A killed TCP connection gives the NDEATH with the same bdSeq. The bdSeq increases by 1 for each CONNECT packet, and attempts without a CONNECT keep it. After a power cycle and after NCMD Reboot, the bdSeq is 0 again.
+- **#287, #300:** in the console log, the line of the bootloader hook `gw_boot: DE GPIO21 set low` comes before the start of the application. The line of `app_main` (`rs485: DE GPIO21 low`) comes after it.
 - **REL-6:** the time from the start of QEMU to the first NBIRTH is less than 10 s. The time includes the start of the emulator. The limit scales with `--timeout-scale`.
 - **Broker restart and frozen broker:** the will at the close, a backoff that increases, then NBIRTH and the DBIRTHs. With the broker stopped for 20 s (SIGSTOP), the keepalive declares the session dead, and the new session stays alive.
 - **MQTT-2 (#5, #11, #89):** a broker that cuts each connection after the CONNACK gives a backoff that increases. A refused SUBACK (0x80) gives no NBIRTH: the gateway sends DISCONNECT and tries again. The check waits up to 15 s for the first three refused connections to end. It requires a DISCONNECT in each, and a backoff that increases strictly. The backoff returns to the minimum only after a session that lasted one keepalive.

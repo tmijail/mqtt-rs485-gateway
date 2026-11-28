@@ -10606,6 +10606,23 @@ def run(args, log, slave, broker, conf, work):
     if not check("1a. NBIRTH published", nb, "no NBIRTH within 40 s" if not nb else
                  f"{nb[0] - t0:.1f} s after QEMU start"):
         return
+    # Issue #300: the hook of the second-stage bootloader (bootloader_components/gw_boot_de) sets
+    # the RS485 DE pin inactive before the application; app_main does it again (#287). The order
+    # of the lines in the console log is the order of the boot. The register bits of the bootloader
+    # line say nothing in QEMU, which does not model the GPIO registers: the check does not read them.
+    boot_lines = [l for t, l in list(gw.lines) if t >= t0]
+
+    def line_at(rx):
+        return next((i for i, l in enumerate(boot_lines) if re.search(rx, l)), None)
+    de_boot = line_at(r"gw_boot: DE GPIO\d+ set (low|high) before the init of the bootloader")
+    app_at = line_at(r"app_init: Project name")
+    de_app = line_at(r"rs485: DE GPIO\d+ (low|high): the transceiver does not drive the bus")
+    check("Issue #300 the second-stage bootloader sets the RS485 DE pin inactive before the "
+          "application starts, and app_main does it again (#287)",
+          None not in (de_boot, app_at, de_app) and de_boot < app_at < de_app,
+          " | ".join(boot_lines[i] for i in (de_boot, de_app) if i is not None) +
+          f"; console lines: bootloader DE {de_boot}, application start {app_at}, "
+          f"app_main DE {de_app}")
     # REL-6: less than 10 s from the boot to the NBIRTH with the network and the broker up. t0 is
     # before the start of QEMU, so the time also holds the start of the emulator (stricter than the
     # boot of the chip). The limit scales with --timeout-scale, as every budget for a slow host.

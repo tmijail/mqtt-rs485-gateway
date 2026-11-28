@@ -28,6 +28,7 @@ An update is one of the ways to put a new firmware on the gateway. A flash over 
 
 - For Install and Repair, refer to [Flash the firmware from the browser](../how-to/flash-the-firmware-from-the-browser.md). They write the parts of a release: refer to [What a flash of a release writes and keeps](release-manifest.md#what-a-flash-of-a-release-writes-and-keeps).
 - `idf.py flash` writes the four parts and the LittleFS image of `idf/fs/`. Refer to [Build the firmware](../how-to/build-the-firmware.md).
+- An update writes only the app into an OTA slot. It never changes the bootloader or the partition table. Only a flash over USB writes them. For example, only a flash over USB installs the bootloader of #300, which sets the RS485 DE pin at the boot. Refer to [Known limitations](known-limitations.md#modbus-mb-6-mb-15).
 - A flash over USB does no pre-flight check. An earlier image can be unable to read the stored configuration, the NVS or the LittleFS partition.
 - The install tool has no update with a trial over USB yet. That function is #281.
 

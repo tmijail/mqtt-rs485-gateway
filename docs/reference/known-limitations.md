@@ -180,12 +180,13 @@ For the detail, refer to [The limits of the web server](commissioning-and-secret
 - With `scale` or `offset`, an `int64` or `uint64` tag becomes a Double, and is not exact above 2^53.
 - For the datatypes, refer to [The datatypes in Sparkplug](configuration.md#the-datatypes-in-sparkplug).
 - **Bias of the RS485 bus.** The board has no bias resistors on A and B (#18). Without a bias at one point of the bus, an idle bus with terminations floats, and the gateway can count frame errors. Refer to [Add bias, if necessary](../how-to/connect-the-rs485-bus.md#add-bias-if-necessary).
-- **The RS485 bus during a reset and the start of the firmware (#287).** On the board, an isolator connects GPIO21 to the DE input of the transceiver. When GPIO21 is not an output, the isolator gives a high DE, and the transceiver drives the bus.
-  - The first step of `app_main` sets GPIO21 as an output at the inactive level of DE (`gw_rs485_de_off`). It does this in each mode: normal, recovery, safe, commissioning and fault.
-  - Before this step, the firmware cannot control GPIO21. This interval starts at each reset and at each restart. It contains the ROM, the bootloader and the start of the application.
+- **The RS485 bus during a reset and the start of the firmware (#287, #300).** On the board, an isolator connects GPIO21 to the DE input of the transceiver. When GPIO21 is not an output, the isolator gives a high DE, and the transceiver drives the bus.
+  - The first step of the second-stage bootloader sets GPIO21 as an output at the inactive level of DE (`bootloader_components/gw_boot_de`, #300).
+  - The first step of `app_main` does this again (`gw_rs485_de_off`, #287). It does this in each mode: normal, recovery, safe, commissioning and fault.
+  - Before the step of the bootloader, no firmware controls GPIO21. This interval starts at each reset and at each restart. It contains the ROM and the start of the bootloader. The firmware cannot make the ROM part shorter.
   - The interval also includes the time that the RESET button stays pushed.
   - During this interval, the gateway holds the bus, and no other device can transmit.
-  - The bootloader does not set GPIO21, because an update of the firmware (OTA) does not change the bootloader.
+  - **An update of the firmware (OTA) does not change the bootloader.** Only a flash through USB writes the bootloader: `idf.py flash`, or Install or Repair in the install tool of the site. A gateway with an older bootloader holds the bus until the start of `app_main`.
   - Nobody measured the duration of the interval on the board. Refer to [Connect the RS485 bus](../how-to/connect-the-rs485-bus.md#the-rs485-port-of-the-board).
 
 ### Modbus TCP (MB-15)

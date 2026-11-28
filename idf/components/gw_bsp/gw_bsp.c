@@ -1,4 +1,5 @@
 #include "gw_bsp.h"
+#include "gw_bsp_pins.h"
 
 #include "sdkconfig.h"
 
@@ -29,9 +30,11 @@ const gw_bsp_t gw_bsp = {
     /* Darlington sink outputs on TCA9554 EXIO1..8: a LOW expander pin turns the
      * output on (demo: TCA9554PWR_Init(0x00, 0xFF) at boot; ESPHome: inverted). */
     .dout = {.i2c_addr = 0x20, .active_low = DO_ACTIVE_LOW},
-    /* Isolated transceiver; the UART's RS485 half-duplex mode raises RTS = DE while sending. */
-    .rs485 = {.uart = UART_NUM_1, .tx = GPIO_NUM_17, .rx = GPIO_NUM_18, .de = GPIO_NUM_21,
-              .de_active_low = false},
+    /* Isolated transceiver; the UART's RS485 half-duplex mode raises RTS = DE while sending.
+     * DE is in gw_bsp_pins.h: the bootloader (#300) reads it too. */
+    .rs485 = {.uart = UART_NUM_1, .tx = GPIO_NUM_17, .rx = GPIO_NUM_18,
+              .de = (gpio_num_t)GW_BSP_RS485_DE_GPIO,
+              .de_active_low = GW_BSP_RS485_DE_ACTIVE_LOW != 0},
     .w5500 = {.host = SPI2_HOST, .mosi = GPIO_NUM_13, .miso = GPIO_NUM_14, .sclk = GPIO_NUM_15,
               .cs = GPIO_NUM_16, .irq = GPIO_NUM_12, .rst = GPIO_NUM_39, .clk_hz = 20000000},
     /* The demo swaps the arguments of neopixelWrite(): the LED takes R, G, B. */

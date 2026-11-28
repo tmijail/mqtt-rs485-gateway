@@ -4,7 +4,7 @@ This document gives the compiler options of the own components, the limit of the
 
 ## The compiler options
 
-[`cmake/gw_warnings.cmake`](https://github.com/tmijail/mqtt-rs485-gateway/blob/main/idf/cmake/gw_warnings.cmake) holds the compiler options of the own components: `gw_*` and `main`. Each of these components calls `gw_target_options()`. The components of ESP-IDF, the managed components and `components/nanopb` keep their own options.
+[`cmake/gw_warnings.cmake`](https://github.com/tmijail/mqtt-rs485-gateway/blob/main/idf/cmake/gw_warnings.cmake) holds the compiler options of the own components: `gw_*`, `main` and the bootloader component `gw_boot_de` (#300). Each of these components calls `gw_target_options()`. The components of ESP-IDF, the managed components and `components/nanopb` keep their own options.
 
 | Option | Firmware (`gw_*`, `main`) | Host build of `gw_core`, host tests | What it finds |
 |---|---|---|---|
@@ -30,10 +30,10 @@ This document gives the compiler options of the own components, the limit of the
 
 The host tests compile only `gw_core`. The IDF adapters (`gw_web`, `gw_fw`, `gw_storage`, `gw_edge`, `gw_net`, `gw_bus`, `main` and the other `gw_*` components) compile only in the firmware build. The CI job `analyzer` builds the firmware with the GCC static analyzer (`-fanalyzer`, GCC 15.2 of ESP-IDF v6.1) on all own components (issue #230).
 
-- The CMake variable `GW_ANALYZER` (default `OFF`) adds `-fanalyzer` in `gw_target_options()`. Thus it applies only to `gw_*` and `main`, in the release configuration.
+- The CMake variable `GW_ANALYZER` (default `OFF`) adds `-fanalyzer` in `gw_target_options()`. Thus it applies only to the own components, in the release configuration. The bootloader is a separate CMake project: `idf/CMakeLists.txt` gives `GW_ANALYZER` to it through `EXTRA_CMAKE_ARGS`, so the analyzer also examines `gw_boot_de`.
 - The job uses a separate build folder, `build-analyzer`. The release build and the job `firmware` do not change.
 - The project does not use `CONFIG_COMPILER_STATIC_ANALYZER` of ESP-IDF. That option adds `-fanalyzer` to all components, also to ESP-IDF and the managed components, and ESP-IDF has known false positives.
-- With `-Werror`, a result of the analyzer stops the build. The job then gives each result in `components/gw_*` and `main`.
+- With `-Werror`, a result of the analyzer stops the build. The job then gives each result in `components/gw_*` and `main`. A result in `bootloader_components/gw_boot_de` also stops the build, but the job does not list it separately.
 - The analyzer examines only the source files of the own components. A result in a header of ESP-IDF is possible only on a path through the own code, and it also stops the build.
 - The code has some changes for false positives of the analyzer, so that the analyzer can follow the code. Each change keeps the behaviour, and has a comment with the name of the check and the reason. The project does not hide a result with `#pragma` or `-Wno-analyzer-*`.
 

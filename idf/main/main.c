@@ -531,9 +531,11 @@ static const char *reset_reason(void)
 
 void app_main(void)
 {
-    /* Issue #287: first, in every mode. Until here the DE pin is an input, and the isolator then
-     * gives a high DE: the transceiver holds the RS485 bus. The fault, safe, recovery and
-     * commissioning modes do not start gw_bus, so nothing else drives the pin in them. */
+    /* Issue #287: first, in every mode. An input DE pin makes the isolator give a high DE: the
+     * transceiver holds the RS485 bus. The bootloader of #300 (bootloader_components/gw_boot_de)
+     * already did this, but an OTA update does not change the bootloader: a board with an older
+     * bootloader comes here with an input pin. The fault, safe, recovery and commissioning modes
+     * do not start gw_bus, so nothing else drives the pin in them. */
     const esp_err_t de_err = gw_rs485_de_off();
     const esp_app_desc_t *app = esp_app_get_description();
     s_info.firmware = app->version;

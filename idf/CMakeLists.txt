@@ -38,6 +38,12 @@ endif()
 set(GW_FS_DIR "${CMAKE_CURRENT_LIST_DIR}/fs" CACHE PATH "LittleFS image source directory")
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
+# Issue #300: the bootloader is a separate CMake project (bootloader_components/gw_boot_de). It
+# gets the -D options of idf.py only through EXTRA_CMAKE_ARGS: the analyzer build examines the
+# own bootloader component too (cmake/gw_warnings.cmake).
+if(GW_ANALYZER)
+    idf_build_set_property(EXTRA_CMAKE_ARGS "-DGW_ANALYZER=ON" APPEND)
+endif()
 project(rs485_spb_gateway)
 
 # Issue #256: the debug lines of espcoredump (ESP_COREDUMP_LOGD, esp_core_dump_types.h) compile
