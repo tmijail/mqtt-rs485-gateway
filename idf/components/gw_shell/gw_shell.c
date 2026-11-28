@@ -16,7 +16,6 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
-#include "freertos/freertos_debug.h"   /* board test build only: stacks (#129 M4) */
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "gw_access.h"
@@ -1473,51 +1472,51 @@ static int cmd_crash(int argc, char **argv)
     return 0;
 }
 
-/* #129 M4: the stack high-water mark of every task (the IDF tasks with the real drivers and
- * the gateway tasks). The list comes from the task snapshot of FreeRTOS, so no task is missed
- * (the lwIP task is "tcpip" in ESP-IDF v6.1, not "tiT"). */
+/* #129 M4: the stack high-water mark of the IDF tasks with the real drivers and of the gateway
+ * tasks. A list of names, not a walk of the task lists: a walk (uxTaskGetSnapshotAll) has no lock
+ * against the other core while the scheduler runs. The lwIP task is "tcpip" in ESP-IDF v6.1.
+ * The last line compares the tasks found with the number of tasks, so a task without a name in
+ * the list shows as a difference. */
 static int cmd_stacks(int argc, char **argv)
 {
     (void)argc;
     (void)argv;
-    enum { STACKS_MAX = 64 };
-    typedef struct {
-        char name[configMAX_TASK_NAME_LEN];
-        unsigned free_b;
-        int core;
-    } stacks_row_t;
-    TaskSnapshot_t *snap = gw_storage_malloc(STACKS_MAX * sizeof(*snap));
-    stacks_row_t *rows = gw_storage_malloc(STACKS_MAX * sizeof(*rows));
-    if (snap == NULL || rows == NULL) {
-        heap_caps_free(snap);
-        heap_caps_free(rows);
-        out("stacks: no memory\n");
-        return 1;
-    }
-    /* freertos_debug.h: with the scheduler running, call the snapshot between
-     * vTaskSuspendAll() and xTaskResumeAll() */
-    vTaskSuspendAll();
-    UBaseType_t n = uxTaskGetSnapshotAll(snap, STACKS_MAX, NULL);
-    for (UBaseType_t i = 0; i < n; i++) {
-        TaskHandle_t h = (TaskHandle_t)snap[i].pxTCB;
-        strlcpy(rows[i].name, pcTaskGetName(h), sizeof(rows[i].name));
-        rows[i].free_b = (unsigned)uxTaskGetStackHighWaterMark(h);
-        BaseType_t c = xTaskGetCoreID(h);
-        rows[i].core = c == tskNO_AFFINITY ? -1 : (int)c;
-    }
-    UBaseType_t total = uxTaskGetNumberOfTasks();
-    xTaskResumeAll();
-    out("stacks: %u tasks (of %u)\n", (unsigned)n, (unsigned)total);
-    for (UBaseType_t i = 0; i < n; i++) {
-        if (rows[i].core < 0) {
-            out("%-16s %u B free (high-water mark), core -\n", rows[i].name, rows[i].free_b);
+    static const char *const names[] = {
+        /* ESP-IDF and FreeRTOS */
+        "IDLE0", "IDLE1", "ipc0", "ipc1", "esp_timer", "Tmr Svc", "sys_evt", "tcpip", "tiT",
+        "wifi", "w5500_tsk", "mdns", "mqtt_task", "console_repl", "main",
+        /* the gateway ("httpd" and "httpd_redirect" come from gw_web, by their handles) */
+        "sparkplug", "rs485_bus", "local_io", "web_guard", "boot_button", "buzzer", "status_led",
+        "syslog", "modbus_tcp", "fw_update", "fw_install", "fw_park", "card_format"};
+    unsigned found = 0;
+    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+        TaskHandle_t h = xTaskGetHandle(names[i]);
+        if (h == NULL) {
+            out("%-16s -\n", names[i]);
+            continue;
+        }
+        found++;
+        BaseType_t core = xTaskGetCoreID(h);
+        if (core == tskNO_AFFINITY) {
+            out("%-16s %u B free (high-water mark), core -\n", names[i],
+                (unsigned)uxTaskGetStackHighWaterMark(h));
         } else {
-            out("%-16s %u B free (high-water mark), core %d\n", rows[i].name, rows[i].free_b,
-                rows[i].core);
+            out("%-16s %u B free (high-water mark), core %d\n", names[i],
+                (unsigned)uxTaskGetStackHighWaterMark(h), (int)core);
         }
     }
-    heap_caps_free(snap);
-    heap_caps_free(rows);
+    unsigned web_free, redirect_free;
+    gw_web_stack_free(&web_free, &redirect_free);
+    if (web_free > 0) {
+        found++;
+        out("%-16s %u B free (high-water mark)\n", "httpd", web_free);
+    }
+    if (redirect_free > 0) {
+        found++;
+        out("%-16s %u B free (high-water mark)\n", "httpd_redirect", redirect_free);
+    }
+    out("stacks: %u tasks found by name, %u tasks in total\n", found,
+        (unsigned)uxTaskGetNumberOfTasks());
     return 0;
 }
 ATOMIC(cmd_stacks)
