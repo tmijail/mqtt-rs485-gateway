@@ -137,3 +137,9 @@ CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 # names, FatFs allocates no name buffer on each open, stat or unlink (FATFS_LFN_HEAP did, in the
 # Sparkplug task).
 CONFIG_FATFS_LFN_NONE=y
+
+# BOARD TEST BUILD ONLY (#129 M4 and M6, branch board-test/soak-*; never merged into main): the
+# 24 h soak on the board with comprehensive heap poisoning. Freed memory is filled with 0xFE and
+# each block has canaries that free() checks, so a use after free or an overrun aborts with
+# CORRUPT HEAP. It costs memory on each allocation and time on each malloc and free.
+CONFIG_HEAP_POISONING_COMPREHENSIVE=y
